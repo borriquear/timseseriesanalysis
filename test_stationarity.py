@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-time series characterization.
+time series characterization
 
 @author: jaime
 """
@@ -22,6 +22,7 @@ from nilearn.input_data import NiftiLabelsMasker
 from nilearn.input_data import NiftiMapsMasker
 from nilearn import plotting
 from nilearn import datasets
+from nilearn import input_data
 from nipy.labs.viz import plot_map, mni_sform, coord_transform
 import seaborn as sns
 
@@ -32,8 +33,12 @@ def test():
     #sys.stdout = f
     # Load Data Image
     image_file = load_fmri_image()
-    masker = load_masker(mask_file='cort-maxprob-thr25-2mm')
-    print " Calling to createDataFrame_from_image for Image:",image_file, "\nMask:", masker.get_params
+    # mask_file = None (entire brain), mask_file = 'coordinates' coordinates specified in load_masker
+    mask_file = None
+    #mask_file = 'coordinates'
+    #mask_file= 'cort-maxprob-thr25-2mm'
+    masker = load_masker(mask_file=mask_file)
+    print " Calling to createDataFrame_from_image for Image:",image_file, "Mask:", mask_file
     timeseries = createDataFrame_from_image(image_file, masker)
     #return timeseries, mask_data
     print "Time series dimensions :", timeseries.shape
@@ -46,8 +51,8 @@ def test():
     # Stationarity
     print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
     res_stationarity = run_test_stationarity_adf(timeseries)
-    
-    return timeseries, masker, res_lagged, res_acf, res_stationarity
+    # res_lagged, res_acf, res_stationarity are list, to print the results: res_acf[volxel_index].summary() 
+    return timeseries, masker, res_lagged, res_acf, res_stationarity 
 
 def  load_fmri_image(image_file=None):
     # Load fmri image (4D object)
@@ -60,7 +65,9 @@ def  load_fmri_image(image_file=None):
 def load_masker(mask_file=None):   
     # Returns the Masker object from an Atlas (mask_file) or a list of voxels     
     if mask_file is None:    
-        # The mask is a list of voxels
+        print " No mask used, process the entire brain"
+        return None
+    elif mask_file is 'coordinates':
         dmn_coords = [(0, -52, 18), (-46, -68, 32), (46, -68, 32), (1, 50, -5)]
         labels = [
                 'Posterior Cingulate Cortex',
@@ -68,9 +75,10 @@ def load_masker(mask_file=None):
                 'Right Temporoparietal junction',
                 'Medial prefrontal cortex'
                 ]   
+        print " The mask is list of voxels:", labels
         masker = input_data.NiftiSpheresMasker(dmn_coords, radius=8,
                                                detrend=True, standardize=True,
-                                               low_pass=0.001, high_pass=0.2, 
+                                               low_pass=0.2, high_pass=0.001, 
                                                t_r=2.5,memory='nilearn_cache', 
                                                memory_level=1, verbose=2)
     else:
@@ -128,8 +136,8 @@ def run_collinearity_on_df(y):
         # Convert df into timeseries and call each time
         summary_list = []
         #return mask
-        for index in np.arange(0,y.shape[1]-1):
-            print "Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1 
+        for index in np.arange(0,y.shape[1]):
+            print "===Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1
             # print pd.Series(y[:,index])
             res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]))
             summary_list.append(res_lagged)
@@ -172,10 +180,11 @@ def run_autoregression_on_df(y):
     if type(y) is np.ndarray:
         # Convert df (np.ndarray) into timeseries and call each time
         summary_list = []
-        for index in np.arange(0,y.shape[1]-1):
-            print "Estimating autoregression for ts ROI:", index, "/", y.shape[1]-1 
+        for index in np.arange(0,y.shape[1]):
+            print "===Estimating autoregression for ts ROI:", index, "/", y.shape[1]-1 
             res_trend  = run_autoregression_on_ts(pd.Series(y[:,index]))                                                                
             summary_list.append(res_trend)                                                                
+            print res_trend.summary()
                                                                             
     return summary_list        
                                                                 
@@ -196,11 +205,11 @@ def run_test_stationarity_adf(y):
     if type(y) is np.ndarray:    
         # Convert df (np.ndarray) into timeseries and call each time
         summary_list = []
-        for index in np.arange(0,y.shape[1]-1):
-           print "Estimating stationarity for ts ROI:", index, "/", y.shape[1]-1                                                               
-           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]))                                                                  
-           summary_list.append(res_trend)                                                                    
-                                                                             
+        for index in np.arange(0,y.shape[1]):
+           print "===Estimating stationarity for ts ROI:", index, "/", y.shape[1]-1                                                               
+           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]))   
+           summary_list.append(res_trend)                                                                          
+    return summary_list                                                                        
                                                                              
 def run_test_stationarity_adf_ts(timeseries):
     #Determing rolling statistics
@@ -231,92 +240,7 @@ def run_test_stationarity_adf_ts(timeseries):
                 
     #print dfoutput
     return dfoutput
-    
-def load_matfile(matfile='/Users/jaime/vallecas/sub_bcpa0537/session_0/func/session_f004/matlab_results/cadaverbcpa0537-0_81_ON.mat'):
-    #/Users/jaime/vallecas/sub_bcpa0537/session_0/func/session_f004/matlab_results/cadaverbcpa0537-0_81_ON.mat
-    #/Users/jaime/vallecas/sub_bcpa0537/session_1/func/session_f008/matlab_results/brainbcpa0537-1_81_ON.mat
-    print 'Loading mat file---:', matfile
-    lisofvoxels = [(55,112,16),(57,112,17),(56,112,17)] #cad
-    lisofvoxels = [(55,112,16),(57,112,15),(56,112,16)] #cad
-    #lisofvoxels = [(30,40,30),(32,40,31),(31,40,30)] #phantom
-    lisofvoxels = [(60,71,2),(50,98,5),(50,97,5)] #brain
-    lisofvoxels = [(58,71,2),(50,98,5),(50,97,5)] #brain
-    mdata = loadmat(matfile)
-    print mdata.keys()
-    ts = mdata['ts']
-    #save mat file -v7.3 and load in python with  HDF5
-    #import h5py
-    #f = h5py.File(file2save, 'r')
-    #myts = f.get('ts')
-    #myts[:,2,71,60] (time, z,y,x)
-    #pws = mdata['pws']
-    #amps = mdata['amps']
-    #meanspsdperbin = mdata['meanspsdperbin']
-    #imgmeanspwnnz = mdata['imgmeanspwnnz']
-    #pw_timeseries = pws[30,50,12,:]
-    #pw_timeseries = pws[30,50,12,:]
-    #print pw_timeseries[lisofvoxels[1],:]
-    # plot time series for each of the three maximapoints
-    for p in range(0,lisofvoxels.__len__()):  
-        print 'Plotting the stationary test for voxel: ', lisofvoxels[p]
-        timeseries= ts[lisofvoxels[p][0],lisofvoxels[p][1],lisofvoxels[p][2],:]
-        test_stationarity.test_stationarity(timeseries)
-                
-def var_modeling():
-    # Load the data
-    tsa = sm.tsa
-    mdata = sm.datasets.macrodata.load().data
-    mdata = mdata['realgdp','realcons','realinv'] 
-    names = mdata.dtypes.names
-    data = mdata.view((float,3))
-    data = np.diff(np.log(data), axis = 0)
-    # Build VAR model to fit the data
-    model = tsa.VAR(data)
-    res = model.fit(2)  
-    # Plot results  
-    print res.summary
-    res.plot_sample_acorr()
-    # Test for Granger Causality
-    res.test_causality('realinv','realcons')
-
-def shuffle(df, n=1, axis=0):
-    df = df.copy()
-    for _ in range(n):
-        df.apply(np.random.shuffle, axis=axis)
-    return df    
-# test_stationarity.shuffle(y)
-    
-def run_unit_root_test(df=None):
-    # H0: of the Augmented Dickey-Fuller is that there is a unit root
-    # HA: is stationary (there is no unit root)
-    # If the pvalue is above a critical size, then we cannot reject H0 that there is a unit root (non statiuonary).
-    # statistical significance for ADFuller test
-    stat_threshold = 0.005 
-    print "aDF test, H0: there is an unit root (non-stationary) HA: stationary"
-    adf_results = {}
-    if df is None:
-        # Build the time series 
-        print " Creating the data frame"
-    for col in df.columns.values:
-        ts_pervoxel = df[col]
-        # Plot the original time series and the difference time series, to visually inspect if is stationary, prior to run the ADFuller test
-        ts_pervoxel.to_frame(name='y').assign(deltay=lambda x: x.y.diff()).plot(subplots=True)
-        #print ts_pervoxel
-        adf_results[col] = tsa.adfuller(ts_pervoxel)  
-        #print tsa.adfuller(ts_pervoxel)
-        print "p-value H0: unique root (non stationary) %.5f", adf_results[col][1]   
-        # If the timse series is not stationary -fail to reject the null hypothesis that the original series was non-stationary-  we difference it
-        adf_res = tsa.adfuller(ts_pervoxel.diff().dropna()) 
-        if adf_res > stat_threshold:
-            # We fit a model of delta y
-            data = (ts_pervoxel.to_frame(name='y').assign(deltay=lambda df: df.y.diff()).assign(Ldeltay=lambda df: df.deltay.shift()))                  
-            mod_stationary = smf.ols('deltay ~ Ldeltay', data=data.dropna())
-            res_stationary = mod_stationary.fit()
-            test_stationarity.tsplot(res_stationary.resid, lags=24);
-        
-               
-
-
+                        
 def extract_ts_from_brain(image_data, voxels_list=[]):
     #        
     dim_brains = image_data.shape
@@ -346,40 +270,20 @@ def extract_ts_from_brain(image_data, voxels_list=[]):
                 # concatenate Series with the df to create the dataframe with all the time series for each voxel 200 x totdims
                 df = pd.concat([df, timeseries], axis = 1 )
                 # to access time series by name of column 
-                print df[df.columns[-1]]               
+                #print df[df.columns[-1]]               
                 if np.mean(timeseries) > 10:
-                    print " testing ADF for time series in index , mean",i,j,k, np.mean(timeseries)
-                    dfoutput = test_stationarity_adf(timeseries)  
+                    print " testing stationarity for time series in index:",i,j,k, "mean:", np.mean(timeseries)
+                    res_col = run_collinearity_on_ts(timeseries) 
+                    res_acf = run_autoregression_on_ts(timeseries) 
+                    res_stat = run_test_stationarity_adf_ts(timeseries)
                     # print "H0: unit root non stationary, p value :", dfoutput[1]
-                    if dfoutput[1] > threshold_pvalue:
+                    if res_stat[1] > threshold_pvalue:
                         counter_nonstat =  counter_nonstat + 1
-                        pvalues[i,j,k] =  dfoutput[1]
+                        pvalues[i,j,k] =  res_stat[1]
                         print "We reject H0: unit root or non stationary, p value at x,y,z", dfoutput[1], label
+    print "Non stationary voxels:", counter_nonstat, "/", totdims
     return pvalues    
 
-
-def plot_brain_voxels_test(pvalues):
-    # Activation map for a 3D image in MNI space 
-    x, y, z = 0, 0, 0
-    mni_sform_inv = np.linalg.inv(mni_sform)
-    pv_dims = pvalues.shape
-    pv_dims_a = [pv_dims[0], pv_dims[1], pv_dims[2]]
-    map = np.zeros(pv_dims_a)
-    map = np.zeros((182, 218, 182))
-    for i in np.arange(0, pv_dims[0]-1):
-        for j in np.arange(0, pv_dims[1]-1):
-            for k in np.arange(0, pv_dims[2]-1):
-                label = [i,j,k]
-                if  pvalues[i,j,k] > 0:
-                         map[i,j,k] = 1
-    # We use a masked array to add transparency to the parts that we are
-    # not interested in:
-    thresholded_map = np.ma.masked_less(map, 0.5)
-    # And now, visualize it:
-    plot_map(thresholded_map, mni_sform, cut_coords=(x, y, z), vmin=0.5)                        
-   
-            
-           
 
 def tsplot(y, lags=None, figsize=(10, 8)):  
     fig = plt.figure(figsize=figsize)    
