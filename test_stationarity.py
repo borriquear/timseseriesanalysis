@@ -34,8 +34,8 @@ def test():
     # Load Data Image
     image_file = load_fmri_image()
     # mask_file = None (entire brain), mask_file = 'coordinates' coordinates specified in load_masker
-    mask_file = None
-    #mask_file = 'coordinates'
+    #mask_file = None
+    mask_file = 'coordinates'
     #mask_file= 'cort-maxprob-thr25-2mm'
     masker = load_masker(mask_file=mask_file)
     print " Calling to createDataFrame_from_image for Image:",image_file, "Mask:", mask_file
@@ -51,14 +51,19 @@ def test():
     # Stationarity
     print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
     res_stationarity = run_test_stationarity_adf(timeseries)
+    # Fit the  model with ARIMA
+    res_arima = run_arima_fit(timeseries, order=None)
     # res_lagged, res_acf, res_stationarity are list, to print the results: res_acf[volxel_index].summary() 
+    
     return timeseries, masker, res_lagged, res_acf, res_stationarity 
 
 def  load_fmri_image(image_file=None):
     # Load fmri image (4D object)
     if image_file is None:
         dir_name = '/Users/jaime/vallecas/mario_fa/mario_fa_dicoms/FA10_SIN_rf'
+        dir_name = '/Users/jaime/vallecas/sub_bcpa0578/session_0/func/'
         f_name = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
+        f_name = '10000_fMRI_RESTING_S_20170221164921_8.nii'
         image_file = os.path.join(dir_name, f_name)
     return image_file
     
@@ -85,7 +90,7 @@ def load_masker(mask_file=None):
         # The mask is an Atlas
         dataset = datasets.fetch_atlas_harvard_oxford(mask_file)
         atlas_filename = dataset.maps
-        plotting_atlas = False
+        plotting_atlas = True
         if plotting_atlas is True:
             plotting.plot_roi(atlas_filename)
         # Build the masker object
@@ -159,11 +164,12 @@ def run_collinearity_on_ts(y):
     print res_lagged.summary()
     # If there is no multicollinearity, the coefficient estimation is max in abs value for \beta1 and min for \beta5
     # If  the lagged values are highly correlated with each other the estimates of the slopes are not reliable
-    plotresults = False
+    plotresults = True
     if plotresults is True:
-        ax = plt.axes()
+        
         # Correlation of the coefficients 
-        sns.heatmap(df.corr(),ax = ax)
+        ax = sns.heatmap(df.corr(),vmin=-1.0, vmax=1.0)
+        
         ax.set_title('Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)')
         plt.show()
         # If there is no multicollinearity, we expect the coefficients gradually decline to zero. 
@@ -171,7 +177,7 @@ def run_collinearity_on_ts(y):
         ax2 = res_lagged.params.drop(['Intercept', 'trend']).plot.bar(rot=0)
         plt.ylabel('Coefficient')     
         sns.despine()    
-        plt.show()  
+        plt.show()
     return res_lagged
     
 def run_autoregression_on_df(y):
@@ -194,7 +200,7 @@ def run_autoregression_on_ts(y):
     res_trend = mod_trend.fit()
     # Residuals (the observed minus the expected, or $\hat{e_t} = y_t - \hat{y_t}$) are supposed to be white noise. 
     # Plot the residuals time series, and some diagnostics about them
-    plotacfpcf = False
+    plotacfpcf = True
     if plotacfpcf is True:    
         tsplot(res_trend.resid, lags=36)
     return res_trend
@@ -214,7 +220,7 @@ def run_test_stationarity_adf(y):
 def run_test_stationarity_adf_ts(timeseries):
     #Determing rolling statistics
     #body = 'phantom'
-    toplot = False
+    toplot = True
     if toplot is True:
         plt.figure()
         rolmean = pd.rolling_mean(timeseries, window = 10)
@@ -240,7 +246,38 @@ def run_test_stationarity_adf_ts(timeseries):
                 
     #print dfoutput
     return dfoutput
-                        
+
+def run_arima_fit(y, order=None):
+    # Fit the time seris with ARIMa model
+    if type(y) is pd.core.series.Series:
+        run_arima_fit_ts(y, order)
+    if type(y) is np.ndarray:   
+        # Convert df (np.ndarray) into timeseries and call each time
+        summary_list = []
+        for index in np.arange(0,y.shape[1]):
+            print "===Fitting ARIMA, ROI:", index, "/", y.shape[1]-1   
+            res_trend  = run_arima_fit_ts(pd.Series(y[:,index]),order)   
+            summary_list.append(res_trend) 
+    return summary_list                                                          
+        
+def run_arima_fit_ts(y, order=None):
+    # Fit timeseries with a ARIMA (SRIMAX) sesonal autoregressive integrated moving average with exogenbeous regressors
+    if order is None:
+        # Assign order by default
+        p=1
+        d=1
+        q=1
+    else:
+        p = order[0]
+        d = order[1]
+        q = order[2]
+    res_arima = sm.tsa.ARIMA(y, order=(p,d,q)).fit(method='mle', trend='nc')
+    print "ARIMA AIC=", res_arima.aic
+    arima_plot = True
+    if arima_plot is True:
+        tsplot(res_arima.resid[2:], lags=36)
+    return res_arima    
+                                      
 def extract_ts_from_brain(image_data, voxels_list=[]):
     #        
     dim_brains = image_data.shape
