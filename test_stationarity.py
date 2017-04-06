@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 """
-time series characterization
+time series characterization.
 
 @author: jaime
 """
