@@ -1,4 +1,5 @@
 Time series analysis of signal intensity in pixels.
+
 cd /Users/jaime/github/code/python_trn
 import test_stationarity
 To run the test with image_file and masker.
