@@ -29,11 +29,12 @@ import seaborn as sns
 def test():
     # Run tests for Collinearity, Autocorrelation, Stationarity
     # Redirect the output to file output.txt
-    #f = open('output-bcpa0578ph635.txt','w'); 
+    #f = open('output-bcpa0578ph635.txt','w')
+    plt.rcParams.update({'figure.max_open_warning': 0})
+    #f = open('output-session1-bcpa0537.txt','w')        
     #sys.stdout = f
     # Load Data Image
-    print "AAAAA"
-    image_file = load_fmri_image()
+    image_file = load_fmri_image_name()
     # mask_file = None (entire brain), mask_file = 'coordinates' coordinates specified in load_masker
     #mask_file = None
     mask_file = 'coordinates'
@@ -53,28 +54,40 @@ def test():
     print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
     res_stationarity = run_test_stationarity_adf(timeseries)
     # Fit the  model with ARIMA
-    #res_arima = run_arima_fit(timeseries, order=None)
+    print "Calling to ARIMA model fit"
+    res_arima = run_arima_fit(timeseries, order=None)
+    # Forecasting analysis
+    print "Studying predicatbility of the time series"
+    res_forecasting = run_forecasting(res_arima)
     # res_lagged, res_acf, res_stationarity are list, to print the results: res_acf[volxel_index].summary() 
     
     return timeseries, masker, res_lagged, res_acf, res_stationarity 
 
-def  load_fmri_image(image_file=None):
+def  load_fmri_image_name(image_file=None):
     # Load fmri image (4D object)
     if image_file is None:
-        dir_name = '/Users/jaime/vallecas/mario_fa/mario_fa_dicoms/FA10_SIN_rf'
-        dir_name = '/Users/jaime/vallecas/sub_bcpa0578/session_0/func/'
-        f_name = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
-        f_name = '10000_fMRI_RESTING_S_20170221164921_8.nii'
+        dir_name = '/Users/jaime/vallecas/mario_fa/FA_50'
+        #dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
+        #dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_0/reg.feat'
+        #dir_name = '/Users/jaime/vallecas/data/cadavers/dicom/fromOsiriX_bcpa0650_DEAD_2016_ID7741/niftis'
+        f_name = 'filtered_func_data.nii.gz'
+        f_name = '20170126_172022rsfMRIFA7s007a1001.nii.gz'
+        #f_name = '10000_fMRI_RESTING_S_20170221164921_8.nii'
         image_file = os.path.join(dir_name, f_name)
     return image_file
     
 def load_masker(mask_file=None):   
     # Returns the Masker object from an Atlas (mask_file) or a list of voxels     
     if mask_file is None:    
-        print " No mask used, process the entire brain"
+        print "No mask used, process the entire brain"
         return None
     elif mask_file is 'coordinates':
-        dmn_coords = [(0, -52, 18), (-46, -68, 32), (46, -68, 32), (1, 50, -5)]
+        #
+        #, (0, -52, 18),(-46, -68, 32), (46, -68, 32), (1, 50, -5)
+        #http://sprout022.sprout.yale.edu/mni2tal/mni2tal.html
+        dmn_coords = [(-29,-19,-15), (3, -1, -11), (-52, -19, 7), (29, -92, 2)]
+        dmn_coords = [(-52, -19, 7)]
+        # Left Hipp, right Hipp, Left Prim Auditory (41),Right visual Ass (18) 
         labels = [
                 'Posterior Cingulate Cortex',
                 'Left Temporoparietal junction',
@@ -91,7 +104,7 @@ def load_masker(mask_file=None):
         # The mask is an Atlas
         dataset = datasets.fetch_atlas_harvard_oxford(mask_file)
         atlas_filename = dataset.maps
-        plotting_atlas = True
+        plotting_atlas = False
         if plotting_atlas is True:
             plotting.plot_roi(atlas_filename)
         # Build the masker object
@@ -105,7 +118,7 @@ def createDataFrame_from_image(image_file=None, masker=None):
     # ROI of the mask. nomask doesnt return time series but 1 if the voxel is non stationay 0 if it is.
     if image_file is None:
         # Load image
-        image_file = load_fmri_image(image_file=None)
+        image_file = load_fmri_image_name(image_file=None)
         #data_path = '/Users/jaime/vallecas/mario_fa/mario_fa_dicoms/FA10_SIN_rf' 
         #image_file = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
     image_data = nib.load(image_file).get_data()
@@ -145,7 +158,6 @@ def run_collinearity_on_df(y):
         for index in np.arange(0,y.shape[1]):
             print "===Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1
             # print pd.Series(y[:,index])
-            print "este es", index
             res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]))
             summary_list.append(res_lagged)
      
@@ -174,6 +186,7 @@ def run_collinearity_on_ts(y):
         ax = plt.axes()
         ax.set_title('Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)')
         ax = res_lagged.params.drop(['Intercept', 'trend']).plot.bar(rot=0)
+        plt.ylim(-1,1)
         plt.ylabel('Coefficient')  
         ax = sns.despine()  
         plt.show()
@@ -248,15 +261,17 @@ def run_test_stationarity_adf_ts(timeseries):
     return dfoutput
 
 def run_arima_fit(y, order=None):
-    # Fit the time seris with ARIMa model
+    # Fit the time seris with ARIMA model
     if type(y) is pd.core.series.Series:
         run_arima_fit_ts(y, order)
     if type(y) is np.ndarray:   
         # Convert df (np.ndarray) into timeseries and call each time
         summary_list = []
-        for index in np.arange(0,y.shape[1]):
-            print "===Fitting ARIMA, ROI:", index, "/", y.shape[1]-1   
-            res_trend  = run_arima_fit_ts(pd.Series(y[:,index]),order)   
+        for ind in np.arange(0,y.shape[1]):
+            print "===Fitting ARIMA, ROI:", ind, "/", y.shape[1]-1   
+            #res_trend  = run_arima_fit_ts(pd.Series(y[:,ind]),order) 
+            #You need datetime index when you use pandas, but you can use a numpy ndarray for the series which does not need any index.
+            res_trend  = run_arima_fit_ts(y[:,ind], order)
             summary_list.append(res_trend) 
     return summary_list                                                          
         
@@ -271,13 +286,28 @@ def run_arima_fit_ts(y, order=None):
         p = order[0]
         d = order[1]
         q = order[2]
+    #res_arima = sm.tsa.ARIMA(y, order=(p,d,q)).fit(method='mle', trend='nc')
     res_arima = sm.tsa.ARIMA(y, order=(p,d,q)).fit(method='mle', trend='nc')
-    print "ARIMA AIC=", res_arima.aic
+    print "ARIMA summary"
+    print res_arima.summary()
+    #print "ARIMA AIC=", res_arima.aic
     arima_plot = True
     if arima_plot is True:
-        tsplot(res_arima.resid[2:], lags=36)
+        tsplot(pd.Series(res_arima.resid[2:]), lags=36)
     return res_arima    
                                       
+def run_forecasting(res_arima):
+    pred = res_arima[0].predict()
+    print "Prediction", pred
+    # Pred is the predcited values ndarray
+    #pred_ci = pred.conf_int()
+    ax = res_arima[0].plot_predict()
+    #pred.predicted_mean.plot(ax=ax, label='Forecast', alpha=.7)
+    #ax.fill_between(pred.index,pred.iloc[:, 0],res_arima, color='k', alpha=.2)
+    plt.legend()
+    sns.despine()
+
+    
 def extract_ts_from_brain(image_data, voxels_list=[]):
     #        
     dim_brains = image_data.shape
