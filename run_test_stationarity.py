@@ -25,6 +25,10 @@ from nilearn import datasets
 from nilearn import input_data
 from nipy.labs.viz import plot_map, mni_sform, coord_transform
 import seaborn as sns
+import nolds
+import plotly
+import plotly.graph_objs as go
+plotly.tools.set_credentials_file(username='borriquear', api_key='ZGW7Nrb6GptJzSV7W6VY')
 
 def test():
     # Run tests for Collinearity, Autocorrelation, Stationarity
@@ -57,22 +61,47 @@ def test():
     print "Calling to ARIMA model fit"
     res_arima = run_arima_fit(timeseries, order=None)
     # Forecasting analysis
-    print "Studying predicatbility of the time series"
+    print "Studying predictability of the time series"
     res_forecasting = run_forecasting(res_arima)
     # res_lagged, res_acf, res_stationarity are list, to print the results: res_acf[volxel_index].summary() 
     
     return timeseries, masker, res_lagged, res_acf, res_stationarity 
 
+def test_surrogate_data():
+    # Run surrogate data test for an EPI image and one voxel, generate the surrogate data (dataframe)
+    epi_file = load_fmri_image_name()
+    voxel = [66,101,12]
+    lags =10
+    num_realizations = 100
+    timeseries = extract_ts_from_one_voxel(epi_file, voxel)    
+    surrogate_data = generate_surrogate_data(timeseries, num_realizations, 'gaussian noise')
+    correlation_perlag = hypothesis_testing(timeseries, surrogate_data,lags)
+    #return timeseries
+    # plor correlation of time series normalized (ACF == 1 for shift == 0)
+    correlation_perlag_mean= correlation_perlag[0][1:]
+    correlation_perlag_std= correlation_perlag[1][1:]
+    all_correlations = correlation_perlag[2]
+    #return all_correlations
+    plot_correlation_histogram(correlation_perlag_mean, correlation_perlag_std, all_correlations, lags)
+    # generate surrogate data for ARMA test
+    return timeseries
+    surrogate_data_arima = generate_surrogate_data(timeseries, num_realizations, 'arima')
+    mydict = calculate_nonlinearmeasures(timeseries)
+    return surrogate_data_arima, mydict
+    
+    
+    #return correlation_perlag_mean, correlation_perlag_std 
+
 def  load_fmri_image_name(image_file=None):
     # Load fmri image (4D object)
     if image_file is None:
-        dir_name = '/Users/jaime/vallecas/mario_fa/FA_50'
+        dir_name = '/Users/jaime/vallecas/mario_fa/RF_off'
         #dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
-        #dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_0/reg.feat'
+        dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_0/reg.feat'
         #dir_name = '/Users/jaime/vallecas/data/cadavers/dicom/fromOsiriX_bcpa0650_DEAD_2016_ID7741/niftis'
         f_name = 'filtered_func_data.nii.gz'
-        f_name = '20170126_172022rsfMRIFA7s007a1001.nii.gz'
-        #f_name = '10000_fMRI_RESTING_S_20170221164921_8.nii'
+        #f_name = '20170126_172022rsfMRIFA7s007a1001.nii.gz'
+        #f_name = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
         image_file = os.path.join(dir_name, f_name)
     return image_file
     
@@ -86,7 +115,8 @@ def load_masker(mask_file=None):
         #, (0, -52, 18),(-46, -68, 32), (46, -68, 32), (1, 50, -5)
         #http://sprout022.sprout.yale.edu/mni2tal/mni2tal.html
         dmn_coords = [(-29,-19,-15), (3, -1, -11), (-52, -19, 7), (29, -92, 2)]
-        dmn_coords = [(-52, -19, 7)]
+        dmn_coords = [(0.5,-13,-8)] # [(1,-13,-14)] #cerebellum_0537_1
+        dmn_coords = [(1, -40, 40)] # mario RF OFF
         # Left Hipp, right Hipp, Left Prim Auditory (41),Right visual Ass (18) 
         labels = [
                 'Posterior Cingulate Cortex',
@@ -160,7 +190,6 @@ def run_collinearity_on_df(y):
             # print pd.Series(y[:,index])
             res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]))
             summary_list.append(res_lagged)
-     
     return summary_list
                
 def run_collinearity_on_ts(y):
@@ -277,6 +306,7 @@ def run_arima_fit(y, order=None):
         
 def run_arima_fit_ts(y, order=None):
     # Fit timeseries with a ARIMA (SRIMAX) sesonal autoregressive integrated moving average with exogenbeous regressors
+
     if order is None:
         # Assign order by default
         p=1
@@ -291,7 +321,7 @@ def run_arima_fit_ts(y, order=None):
     print "ARIMA summary"
     print res_arima.summary()
     #print "ARIMA AIC=", res_arima.aic
-    arima_plot = True
+    arima_plot = False
     if arima_plot is True:
         tsplot(pd.Series(res_arima.resid[2:]), lags=36)
     return res_arima    
@@ -305,8 +335,16 @@ def run_forecasting(res_arima):
     #pred.predicted_mean.plot(ax=ax, label='Forecast', alpha=.7)
     #ax.fill_between(pred.index,pred.iloc[:, 0],res_arima, color='k', alpha=.2)
     plt.legend()
+    plt.title('Predictability of the signal at Cerebellum RF_OFF')
     sns.despine()
 
+def extract_ts_from_one_voxel(image_file, voxel=[]):
+    # Obtain the time series from a voxel
+    image_data = nib.load(image_file).get_data()
+    dims_image = image_data.shape
+    timeseries = pd.Series(image_data[voxel[0],voxel[1],voxel[2]])
+    print "Getting time series for voxel:", voxel, "\n is:", timeseries
+    return timeseries
     
 def extract_ts_from_brain(image_data, voxels_list=[]):
     #        
@@ -365,3 +403,89 @@ def tsplot(y, lags=None, figsize=(10, 8)):
     sns.despine()                            
     plt.tight_layout() 
     return ts_ax, acf_ax, pacf_ax  
+
+def generate_surrogate_data(timeseries,n=100, nullmodel=None):
+    # Generate surrogate data time series from one time series get n realizations according to nullmodel (hypothesis)
+    print "Generating surrogate data for n=", n, "samples and Hypothesis=",  nullmodel
+    df = pd.DataFrame()
+    if nullmodel is None:
+        nullmodel='gaussian noise'
+    if nullmodel == "gaussian noise":
+        mu, sigma = 0, 1 # mean and std
+        for i in np.arange(0, n):
+            noise = np.random.normal(mu, sigma, timeseries.size)
+            df = pd.concat([df, timeseries + noise], axis = 1 )
+    elif nullmodel == "arima":
+        # generate ARMA model estimate the parameters with the original time series
+        for i in np.arange(0, n):
+            residuals = run_arima_fit_ts(timeseries, order=None)
+            print "check is e changes", residuals
+            df = pd.concat([df, residuals], axis = 1 )
+    # calculate the correlation of the entire data frame as a (symmetric) matrix 
+    #print df.corr()
+    return df
+
+def hypothesis_testing(original_ts, dataframe,lags=5):
+    timepoints, realizations = dataframe.shape
+    correlation_array = []
+    correlation_array_std = []
+    y = [] #array 2D with all pairwise correlations
+    if lags is None:
+        lags = 5
+    for i in np.arange(0, lags+1):
+        x = []
+        for j in np.arange(0, realizations):
+            ts_tocompare = dataframe.iloc[:,j].shift(i)
+            #pairwise 
+            corr = original_ts.corr(ts_tocompare)
+            #ts_tocompare = np.nan_to_num(ts_tocompare) #remove nans 
+            # Pearson correlation between the orginal time series and the null model for lag i
+            #corr = np.correlate(original_ts,ts_tocompare)
+            x.append(corr)
+        y.append(x)
+        correlation_array.append(np.mean(x))   
+        correlation_array_std.append(np.std(x))
+        print "The mean correlation for shift=", i, " is:", correlation_array[i], "std=",  correlation_array_std[i]
+    return correlation_array, correlation_array_std, y 
+
+def plot_correlation_histogram(correlation_array, correlation_array_std, all_correlations, lags):
+    # Plot the bar and the histogram for the original time series correlation with the surrogate data for each lag
+    # Plot the bar of the mean correlation between the original ts and the n realizations for each lag
+    x_pos = len(correlation_array)
+    listlags = ('1','2','3','4','5','6','7','8','9','10')
+    plt.bar(np.arange(x_pos), correlation_array[:], align='center', alpha=0.5, yerr=correlation_array_std[:])
+    plt.xticks(np.arange(x_pos), listlags)
+    plt.ylabel('Correlation ts~ts shifted')
+    plt.xlabel('Time lags')
+    plt.title('H0 time series is iid Gaussian noise')
+    # Plot distribution of the correlation 
+    plot_distrib= False
+    if len(all_correlations) and plot_distrib > 0:
+        plt.figure()
+        # convert list into array
+        corr_array = all_correlations[0:]
+        #Plot the hisogram for lags
+        corr_array[0]
+        bins = np.linspace(0, 1, 1000)
+        plt.hist(corr_array[1], bins, alpha=0.5)
+        plt.hist(corr_array[2], bins, alpha=0.5)
+        plt.hist(corr_array[3], bins, alpha=0.5)
+        # add a 'best fit' line
+        plt.show()
+        
+def calculate_nonlinearmeasures(timeseries):
+    # Calculate significant statistics (non linear measures) of one time series
+    # We use the numpy-based library NOnLinear measures for Dynamical Systems (nolds) 
+    # https://pypi.python.org/pypi/nolds/0.2.0
+    # convert Series into arrar
+    timeseries = timeseries.values
+    emb_dim=1
+    print timeseries
+    corr_dim = nolds.corr_dim(timeseries, emb_dim)
+    print "The correlation dimension (measure of the fractal dimension of a time series) is:", corr_dim
+    lyap = nolds.lyap_r(timeseries) # lyap_r for laargest exponent, lyap_e for the whole spectrum
+    print "The largest positive Lyapunov exponents -initial conditions sensibility) is:", lyap
+    ap_entropy = nolds.sampen(timeseries)
+    print "The sample entropy  (complexity of a time-series, based on approximate entropy)", ap_entropy
+    nonlmeasures = {'corr_dim':corr_dim,'sampen':ap_entropy,'lyap':lyap}
+    return nonlmeasures
