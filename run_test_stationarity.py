@@ -5,6 +5,7 @@ time series characterization
 
 @author: jaime
 """
+import pdb
 import sys
 import pandas as pd
 import numpy as np
@@ -15,65 +16,108 @@ import statsmodels.tsa.api as smt
 import statsmodels.formula.api as smf
 from statsmodels.tsa.stattools import adfuller
 from scipy.io import loadmat  # this is the SciPy module that loads mat-files
+from scipy.spatial.distance import euclidean
+from scipy import stats
+from scipy import signal
+
 from datetime import datetime, date, time
 import statsmodels.tsa.stattools as tsa
 import nibabel as nib
+from nilearn import input_data
 from nilearn.input_data import NiftiLabelsMasker
 from nilearn.input_data import NiftiMapsMasker
 from nilearn import plotting
 from nilearn import datasets
 from nilearn import input_data
+from nilearn.connectome import ConnectivityMeasure
 from nipy.labs.viz import plot_map, mni_sform, coord_transform
 import seaborn as sns
+from fastdtw import fastdtw
 import nolds
+
+import nitime
+# Import the time-series objects:
+from nitime.timeseries import TimeSeries
+# Import the analysis objects:
+from nitime.analysis import SpectralAnalyzer, FilterAnalyzer, NormalizationAnalyzer
+
 import plotly
-import plotly.graph_objs as go
 plotly.tools.set_credentials_file(username='borriquear', api_key='ZGW7Nrb6GptJzSV7W6VY')
+import plotly.plotly as py
+import plotly.graph_objs as go
+from mpl_toolkits.mplot3d import Axes3D
+import warnings
 
-def test():
-    # Run tests for Collinearity, Autocorrelation, Stationarity
-    # Redirect the output to file output.txt
-    #f = open('output-bcpa0578ph635.txt','w')
-    plt.rcParams.update({'figure.max_open_warning': 0})
-    #f = open('output-session1-bcpa0537.txt','w')        
-    #sys.stdout = f
-    # Load Data Image
-    image_file = load_fmri_image_name()
-    # mask_file = None (entire brain), mask_file = 'coordinates' coordinates specified in load_masker
-    #mask_file = None
-    mask_file = 'coordinates'
-    #mask_file= 'cort-maxprob-thr25-2mm'
-    masker = load_masker(mask_file=mask_file)
-    print " Calling to createDataFrame_from_image for Image:",image_file, "Mask:", mask_file
-    timeseries = createDataFrame_from_image(image_file, masker)
-    #return timeseries, mask_data
-    print "Time series dimensions :", timeseries.shape
-    # Check for Collinearity
-    print " Calling to run_collinearity_on_ts(y) to test for collinearity in the time series"
-    res_lagged = run_collinearity_on_df(timeseries)
-    # Autocorrelation
-    print "Calling to run_autoregression_on_ts(y) to test for autocorrelation in the time series" 
-    res_acf = run_autoregression_on_df(timeseries)                                         
-    # Stationarity
-    print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
-    res_stationarity = run_test_stationarity_adf(timeseries)
-    # Fit the  model with ARIMA
-    print "Calling to ARIMA model fit"
-    res_arima = run_arima_fit(timeseries, order=None)
-    # Forecasting analysis
-    print "Studying predictability of the time series"
-    res_forecasting = run_forecasting(res_arima)
-    # res_lagged, res_acf, res_stationarity are list, to print the results: res_acf[volxel_index].summary() 
+
+def test_connectome_timeseries(epi_file=None, dim_coords=None):
+    """ connectome time series characterization
+    Run tests for collinearity, run_autoregression_on_df, stationarity and calculates the connectome of the given coords
+    Example: test_connectome_timeseries() 
+    test_connectome_timeseries(None, [(20,20,20),(30,12,7)])
+    test_connectome_timeseries(None, 'cort-maxprob-thr25-2mm')
+    test_connectome_timeseries(None, get_MNI_coordinates('DMN'))    
+    """
+    if epi_file is None:
+        [epi_file, epi_params]= load_fmri_image_name()
+        print " EPI file:", epi_file, " EPI params:", epi_params
+    if dim_coords is None:
+        # Coordinates mask: masker = load_masker(dim_coords=[(x,y,z), (x,y,z)])
+        # Harvard atlas mask: masker = load_masker(dim_coords='cort-maxprob-thr25-2mm')
+        label = 'DMN'
+        dim_coords = get_MNI_coordinates(label)
+        masker = load_masker(dim_coords)
+    else:
+        masker = load_masker(dim_coords)
+    time_series = masker.fit_transform(epi_file)
+    print "Plotting time series"
+    plot_ts_network(time_series, dim_coords.keys())
+#    if time_series.shape[0] != epi_params:
+#        warnings.warn("The time series number of points is !=116 check your bold_data.nii !!", Warning)
+#    print "Masker is:", masker, " \n \t and time series shape", time_series.shape #, ", time_series", time_series
+#    
+#    # Characterize the time series
+#    print "Testing for collinearity in the time series"
+#    res_lagged = run_collinearity_on_df(time_series)
+#    print "Calling to run_autoregression_on_ts(y) to test for autocorrelation in the time series" 
+#    res_acf = run_autoregression_on_df(time_series)      
+#    print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
+#    res_stationarity = run_test_stationarity_adf(time_series)                                    
+#    print "Calling to ARIMA model fit"
+#    res_arima = run_arima_fit(time_series, order=None)
+#    #print "Calling to run_forecasting to study predictability of the time series for the ARIMA"
+#    #res_forecasting = run_forecasting(res_arima)
+#    #return masker, time_series, res_lagged, res_acf, res_stationarity, res_arima 
+#    print "Displaying the connectome"
+#    kind_of_correlation = 'correlation'
+#    corr_matrix = plot_ts_connectome(time_series, kind_of_correlation)
+#    print corr_matrix
+    fourier_analysis = True
+    if fourier_analysis is True:
+        print "Calculating the PSD of the time series"
+        psd_original = fourier_spectral_estimation(time_series)
+    surrogate_analysis = True
+    if surrogate_analysis is True:
+        num_realizations = 10
+        nullmodel = 'gaussian noise'
+        surrogate_data = generate_surrogate_data(time_series, num_realizations, nullmodel)
+        print "Built the surrogate_data data frame dimesnion:", surrogate_data.shape
+        correlation_ts = correlation_of_timeseries(time_series, surrogate_data)
+        print "The correlation mean  between original time series and the surrogate is:, ", correlation_ts[0], " \n std is:", correlation_ts[1]
+        #generate surrogate data wirt other models: orsntein-uhlenbeck regrression to the mean(homeostatic)
+        
+        ts_sig_test, df_sig_test = test_significance(time_series, surrogate_data)
+        
+        
+        
     
-    return timeseries, masker, res_lagged, res_acf, res_stationarity 
-
 def test_surrogate_data():
     # Run surrogate data test for an EPI image and one voxel, generate the surrogate data (dataframe)
-    epi_file = load_fmri_image_name()
-    voxel = [66,101,12]
+    
+    #return
+    #voxel = [66,90,20]
     lags =10
     num_realizations = 100
-    timeseries = extract_ts_from_one_voxel(epi_file, voxel)    
+
     surrogate_data = generate_surrogate_data(timeseries, num_realizations, 'gaussian noise')
     correlation_perlag = hypothesis_testing(timeseries, surrogate_data,lags)
     #return timeseries
@@ -84,55 +128,106 @@ def test_surrogate_data():
     #return all_correlations
     plot_correlation_histogram(correlation_perlag_mean, correlation_perlag_std, all_correlations, lags)
     # generate surrogate data for ARMA test
-    return timeseries
     surrogate_data_arima = generate_surrogate_data(timeseries, num_realizations, 'arima')
-    mydict = calculate_nonlinearmeasures(timeseries)
-    return surrogate_data_arima, mydict
-    
-    
-    #return correlation_perlag_mean, correlation_perlag_std 
+    #mydict = calculate_nonlinearmeasures(timeseries)
+    # Test for significance
+    #pdb.set_trace()
+    ts_sig_test, df_sig_test = test_significance(timeseries, surrogate_data_arima)
+    print "Calculate time serie similarity"
+    ts_sim = ts_similarity(timeseries, surrogate_data_arima)
+    plot_significance_test(ts_sig_test, df_sig_test)
+    # Connectivity Analysis of the DFM
 
+
+def plot_ts_network(ts, lab):
+    # plot_ts_network  Plot time series for a network 
+    # Input: ts time series object
+    # lab: list of labels
+    plt.figure()
+    for ts_ix, label in zip(ts.T, lab):
+        #pdb.set_trace()
+        plt.plot(np.arange(0,len(ts_ix)), ts_ix, label=label)
+        
+    plt.title('Default Mode Network Time Series')
+    plt.xlabel('Time points (TR=2.5s)')
+    plt.ylabel('Signal Intensity')
+    plt.legend()
+    plt.tight_layout()
+    
+def plot_ts_connectome(ts, kind_of_corr=None, labelnet=None):
+     from sklearn.covariance import LedoitWolf, EmpiricalCovariance
+     if kind_of_corr is None:
+         kind_of_corr='correlation'
+     if labelnet is None:
+         labelnet='DMN'  
+     #connectivity_measure = ConnectivityMeasure(kind=kind_of_corr) 
+     #connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=False, block_size=1000, store_precision=False), kind=kind_of_corr) 
+     connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=True), kind=kind_of_corr) 
+     correlation_matrix = connectivity_measure.fit_transform([ts])[0] 
+     #print  correlation_matrix
+     coords_dict = get_MNI_coordinates(labelnet)  
+     plotting.plot_connectome(correlation_matrix, coords_dict.values(),edge_threshold='05%',
+                         title=labelnet,display_mode="ortho",edge_vmax=.5, edge_vmin=-.5)
+     return correlation_matrix    
+         
+    
 def  load_fmri_image_name(image_file=None):
     # Load fmri image (4D object)
+    image_params = {'TR':2.5, 'n':120-4, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
+    image_params = {'TR':2.5, 'n':120, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
     if image_file is None:
         dir_name = '/Users/jaime/vallecas/mario_fa/RF_off'
-        #dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
-        dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_0/reg.feat'
+        dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0517'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0537_0/'
         #dir_name = '/Users/jaime/vallecas/data/cadavers/dicom/fromOsiriX_bcpa0650_DEAD_2016_ID7741/niftis'
-        f_name = 'filtered_func_data.nii.gz'
+        f_name = 'bold_data_mcf2standard.nii.gz'
+        f_name = 'bold_data.nii'
         #f_name = '20170126_172022rsfMRIFA7s007a1001.nii.gz'
         #f_name = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
         image_file = os.path.join(dir_name, f_name)
-    return image_file
+    return image_file, image_params
     
-def load_masker(mask_file=None):   
-    # Returns the Masker object from an Atlas (mask_file) or a list of voxels     
-    if mask_file is None:    
+def load_masker(dim_coords=None):   
+    """Returns the Masker object from an Atlas (mask_file) or a list of voxels
+    
+    Input: dim_coords None || [] returns None (in the future will return a list of brain voxels, the full brain).
+    dim_coords: dictionary of a network of interest eg DMN.
+    dim_coords: list of coordinates of voxels.    
+    dim_coords: atlas_harvard_oxford, eg 'cort-maxprob-thr25-2mm'  
+
+    Example: load_masker() #returns masker for the entire brain
+    load_masker(get_MNI_coordinates('MNI'))  #returns masker for the the MNI coordinates
+    load_masker([(0, -52, 18),(10, -52, 18)]) #returns masker for a list of coordinates 
+    load_masker('cort-maxprob-thr25-2mm') #returns masker for the atlas_harvard_oxford atlas thr25 and 2mm
+                                             
+    """
+    standarize = True # standardize If standardize is True, the time-series are centered and normed: their mean is set to 0 and their variance to 1 in the time dimension.
+    radius = 8 #in mm. Default is None (signal is extracted on a single voxel
+    smoothing_fwhm = None # If smoothing_fwhm is not None, it gives the full-width half maximum in millimeters of the spatial smoothing to apply to the signal.
+    if dim_coords is None or len(dim_coords) == 0:    
         print "No mask used, process the entire brain"
         return None
-    elif mask_file is 'coordinates':
-        #
-        #, (0, -52, 18),(-46, -68, 32), (46, -68, 32), (1, 50, -5)
-        #http://sprout022.sprout.yale.edu/mni2tal/mni2tal.html
-        dmn_coords = [(-29,-19,-15), (3, -1, -11), (-52, -19, 7), (29, -92, 2)]
-        dmn_coords = [(0.5,-13,-8)] # [(1,-13,-14)] #cerebellum_0537_1
-        dmn_coords = [(1, -40, 40)] # mario RF OFF
-        # Left Hipp, right Hipp, Left Prim Auditory (41),Right visual Ass (18) 
-        labels = [
-                'Posterior Cingulate Cortex',
-                'Left Temporoparietal junction',
-                'Right Temporoparietal junction',
-                'Medial prefrontal cortex'
-                ]   
-        print " The mask is list of voxels:", labels
-        masker = input_data.NiftiSpheresMasker(dmn_coords, radius=8,
-                                               detrend=True, standardize=True,
+    elif type(dim_coords) is dict:  
+        # Extract the coordinates from the dictionary
+        print " The mask is the list of voxels:", dim_coords.keys(), "in MNI space:", dim_coords.values()
+        masker = input_data.NiftiSpheresMasker(dim_coords.values(), radius=radius,
+                                               detrend=True, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
                                                low_pass=0.2, high_pass=0.001, 
                                                t_r=2.5,memory='nilearn_cache', 
-                                               memory_level=1, verbose=2)
+                                               memory_level=1, verbose=2, allow_overlap=False)
+        print masker
+    elif type(dim_coords) is list:  
+        # Extract the coordinates from the dictionary
+        print " The mask is the list of voxels:", dim_coords
+        masker = input_data.NiftiSpheresMasker(dim_coords, radius=radius,
+                                               detrend=True, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
+                                               low_pass=0.2, high_pass=0.001, 
+                                               t_r=2.5,memory='nilearn_cache', 
+                                               memory_level=1, verbose=2) 
     else:
         # The mask is an Atlas
-        dataset = datasets.fetch_atlas_harvard_oxford(mask_file)
+        dataset = datasets.fetch_atlas_harvard_oxford(dim_coords)
         atlas_filename = dataset.maps
         plotting_atlas = False
         if plotting_atlas is True:
@@ -148,7 +243,7 @@ def createDataFrame_from_image(image_file=None, masker=None):
     # ROI of the mask. nomask doesnt return time series but 1 if the voxel is non stationay 0 if it is.
     if image_file is None:
         # Load image
-        image_file = load_fmri_image_name(image_file=None)
+        image_file, image_params = load_fmri_image_name(image_file=None)
         #data_path = '/Users/jaime/vallecas/mario_fa/mario_fa_dicoms/FA10_SIN_rf' 
         #image_file = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
     image_data = nib.load(image_file).get_data()
@@ -178,6 +273,13 @@ def createDataFrame_from_image(image_file=None, masker=None):
     return time_series
 
 def run_collinearity_on_df(y):
+    """Test for multicollinearity for y (Pandas.time series or ndarray) 
+    Multicollinearity (collinearity) is a phenomenon in which two or more predictor variables
+    in a multiple regression model are highly correlated. Shift the timeseries lag index times 
+    and calculate the correlation between the coefficients in the regression.
+        
+    
+    """
     # Test for multicollinearity check type of data first
     if type(y) is pd.core.series.Series:
         run_collinearity_on_ts(y)
@@ -186,16 +288,17 @@ def run_collinearity_on_df(y):
         summary_list = []
         #return mask
         for index in np.arange(0,y.shape[1]):
-            print "===Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1
+            print "Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1
             # print pd.Series(y[:,index])
-            res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]))
+            res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]),index)
             summary_list.append(res_lagged)
-    return summary_list
-               
-def run_collinearity_on_ts(y):
-    # Test for multicollinearity for the timeseries considered as a regression problem.
-    # Multicollinearity (collinearity) is a phenomenon in which two or more predictor variables in a multiple regression model are highly correlated
-    # Shift the timeseries lag index times and calculate the correlation between the coefficients in the regression.
+    return summary_list           
+
+def run_collinearity_on_ts(y, index=None):
+    """Test for multicollinearity of time series
+        
+    """
+    if index is None: index=0
     lags = 6
     # Create a dataframe with lagged values of timeseries (y), shifts the index i periods
     df = (pd.concat([y.shift(i) for i in range(lags)], axis=1,keys=['y'] + ['y%s' % i for i in range(1, lags)]).dropna())
@@ -209,45 +312,84 @@ def run_collinearity_on_ts(y):
     # If  the lagged values are highly correlated with each other the estimates of the slopes are not reliable
     plotresults = True
     if plotresults is True:
-        plt.figure()
-        sns.heatmap(df.corr(),vmin=-1.0, vmax=1.0)        
-        plt.figure()
-        ax = plt.axes()
-        ax.set_title('Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)')
-        ax = res_lagged.params.drop(['Intercept', 'trend']).plot.bar(rot=0)
-        plt.ylim(-1,1)
-        plt.ylabel('Coefficient')  
-        ax = sns.despine()  
-        plt.show()
-    
+        plot_collinearity_on_ts(res_lagged, df,"timeseries:%d" % (index))
     return res_lagged
-    
+
+def plot_collinearity_on_ts(res_lagged,df,titlemsg):
+        plt.figure()
+        plt.subplot(2,1,1)
+        sns.heatmap(df.corr(),vmin=-1.0, vmax=1.0) 
+        titlemsg2 = "Shifted " + titlemsg + "  correlation"
+        plt.title(titlemsg2)      
+        plt.subplot(2,1,2)
+        #axarr[0,1] = plt.axes()
+        #ax2.set_title('Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)')
+        res_lagged.params.drop(['Intercept', 'trend']).plot.bar(rot=0)
+        plt.ylim(-1,1)
+        plt.ylabel('Coefficient')
+        titlemsg = 'Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)'
+        plt.title(titlemsg)
+        sns.despine()  
+        #plt.show() 
+        
 def run_autoregression_on_df(y):
+    """Run autoregression on a dataframe
+       Autocorrelation also called serial correlation is observed  for 
+       patterns between the observed and the predicted in the regression model.
+    
+    """
     if type(y) is pd.core.series.Series:
         run_autoregression_on_ts(y)
     if type(y) is np.ndarray:
         # Convert df (np.ndarray) into timeseries and call each time
         summary_list = []
         for index in np.arange(0,y.shape[1]):
-            print "===Estimating autoregression for ts ROI:", index, "/", y.shape[1]-1 
-            res_trend  = run_autoregression_on_ts(pd.Series(y[:,index]))                                                                
+            print "Estimating autoregression for ts ROI:", index, "/", y.shape[1]-1 
+            res_trend  = run_autoregression_on_ts(pd.Series(y[:,index]), index)                                                                
             summary_list.append(res_trend)                                                                
             print res_trend.summary()
                                                                             
     return summary_list        
                                                                 
-def run_autoregression_on_ts(y):  
-    # Autocorrelation also called serial correlation is when there is a pttern between the observed and the predicted in the regression model.
+def run_autoregression_on_ts(y,index=None):  
+    """Run autoregression on a timeseries (ndarray)
+    """
+    if index is None: index=0
     mod_trend = sm.OLS.from_formula('y ~ trend', data=y.to_frame(name='y').assign(trend=np.arange(len(y))))
     res_trend = mod_trend.fit()
     # Residuals (the observed minus the expected, or $\hat{e_t} = y_t - \hat{y_t}$) are supposed to be white noise. 
     # Plot the residuals time series, and some diagnostics about them
     plotacfpcf = True
     if plotacfpcf is True:    
-        tsplot(res_trend.resid, lags=36)
+        plot_autoregression_on_ts(res_trend.resid,msgtitle = "timeseries:%d" % (index), lags=36)
     return res_trend
 
+def plot_autoregression_on_ts(y,msgtitle,lags=None):
+    """
+    """
+    figsize=(10, 8)
+    fig = plt.figure(figsize=figsize)    
+    layout = (2, 2)           
+    ts_ax = plt.subplot2grid(layout, (0, 0), colspan=2)   
+    acf_ax = plt.subplot2grid(layout, (1, 0))  
+    pacf_ax = plt.subplot2grid(layout, (1, 1)) 
+    msgtitle = "Regression residuals " + msgtitle
+    msgtitle= msgtitle + " :y_t - \hat{y_t}"
+    y.plot(ax=ts_ax, title=msgtitle) 
+    smt.graphics.plot_acf(y, lags=lags, ax=acf_ax)        
+    smt.graphics.plot_pacf(y, lags=lags, ax=pacf_ax)    
+    [ax.set_xlim(1.5) for ax in [acf_ax, pacf_ax]] 
+    sns.despine()                            
+    plt.tight_layout() 
+    #plt.title(msgtitle)
+    return ts_ax, acf_ax, pacf_ax  
+
 def run_test_stationarity_adf(y):
+    """Test stationarity of the dataframe using the dickey fuller test
+    http://www.statsmodels.org/stable/generated/statsmodels.tsa.stattools.adfuller.html
+    autolag : {‘AIC’, ‘BIC’, ‘t-stat’, None}
+    H0: ts has unit root (non stationary)
+    """
     if type(y) is pd.core.series.Series:
         run_test_stationarity_adf_ts(y)
     if type(y) is np.ndarray:    
@@ -255,88 +397,108 @@ def run_test_stationarity_adf(y):
         summary_list = []
         for index in np.arange(0,y.shape[1]):
            print "===Estimating stationarity for ts ROI:", index, "/", y.shape[1]-1                                                               
-           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]))   
+           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]), index)   
            summary_list.append(res_trend)                                                                          
     return summary_list                                                                        
                                                                              
-def run_test_stationarity_adf_ts(timeseries):
-    #Determing rolling statistics
-    #body = 'phantom'
-    toplot = True
+def run_test_stationarity_adf_ts(timeseries, index=None):
+    """ dickey fuller test of stationarity for time series
+    H0: ts has unit root (non stationary)
+    """ 
+    if index is None: index = 0
+    toplot = False
+    window = 10
+    #Plot rolling statistics
     if toplot is True:
         plt.figure()
-        rolmean = pd.rolling_mean(timeseries, window = 10)
-        rolstd = pd.rolling_std(timeseries, window = 10)
-        #Plot rolling statistics
+        rolmean = pd.rolling_mean(timeseries, window = window)
+        rolstd = pd.rolling_std(timeseries, window = window)
         orig = plt.plot(timeseries, color = 'blue', label = 'Original')
         mean = plt.plot(rolmean, color = 'red', label = 'Rolling mean')
         std = plt.plot(rolstd, color = 'black', label = 'Rolling std')
         plt.legend(loc='best')
-        plt.title("Rolling mean and std deviation voxel max power ")
-    #plt.show(block=False)
+        msgtitle = "Rolling (window:" + ` window`+ ")" +" mean and std deviation timseries: " + `index`
+        plt.title(msgtitle)
     #Perform Dickey-Fuller test
     autolag = 'BIC'
     #print 'Results of Dickey Fuller test with ', autolag
-    #dftest = adfuller(timeseries, autolag)
     dftest = adfuller(timeseries,maxlag=None, regression='c', autolag=autolag, store=False, regresults=False)
     # print dftest
     dfoutput = pd.Series(dftest[0:4], index=['Test Statistic','p-value','#Lags Used','Number of Observations Used'])
-    print "H0: ts has unit root (non stationary). p-value:", dfoutput['p-value'] 
+    print "Timseries:", index, "H0: ts has unit root (non stationary). p-value:", dfoutput['p-value'] 
     for key,value in dftest[4].items():
-        #print key, value
-        dfoutput['Critical Value (%s)'%key] = value
-                
-    #print dfoutput
+        dfoutput['Critical Value (%s)'%key] = value                
     return dfoutput
 
 def run_arima_fit(y, order=None):
-    # Fit the time seris with ARIMA model
+    """Fit a dataframe with ARIMA(order) model
+    Calls to run_arima_fit_ts to fit timeseries with a ARIMA (SRIMAX) sesonal 
+    autoregressive integrated moving average with exogenbeous regressors 
+    Example: run_arima_fit(timeseries, order = [1,1,1])
+    """
     if type(y) is pd.core.series.Series:
         run_arima_fit_ts(y, order)
     if type(y) is np.ndarray:   
         # Convert df (np.ndarray) into timeseries and call each time
         summary_list = []
         for ind in np.arange(0,y.shape[1]):
-            print "===Fitting ARIMA, ROI:", ind, "/", y.shape[1]-1   
+            print "Fitting ARIMA, ROI:", ind, "/", y.shape[1]-1   
             #res_trend  = run_arima_fit_ts(pd.Series(y[:,ind]),order) 
             #You need datetime index when you use pandas, but you can use a numpy ndarray for the series which does not need any index.
-            res_trend  = run_arima_fit_ts(y[:,ind], order)
+            #pdb.set_trace()
+            try:
+                res_trend = []
+                res_trend  = run_arima_fit_ts(y[:,ind], ind, order)
+            except:
+                warnings.warn("ERROR: The ARIMA model is not invertible!!!", Warning)
             summary_list.append(res_trend) 
+    print "ARIMA per time series objects created:", summary_list        
     return summary_list                                                          
         
-def run_arima_fit_ts(y, order=None):
-    # Fit timeseries with a ARIMA (SRIMAX) sesonal autoregressive integrated moving average with exogenbeous regressors
-
-    if order is None:
-        # Assign order by default
-        p=1
-        d=1
-        q=1
-    else:
-        p = order[0]
-        d = order[1]
-        q = order[2]
+def run_arima_fit_ts(y, indexts=None, order=None):
+    """Fit timeseries with a ARIMA (SRIMAX) sesonal autoregressive integrated moving average with exogenbeous regressors 
+    """
+    res_arima = []
+    if indexts is None: indexts=0                              
+    if order is None: 
+        pe = 1
+        de = 0
+        qu = 1
+    else: 
+        pe = order[0]
+        de = order[1]
+        qu = order[2]
     #res_arima = sm.tsa.ARIMA(y, order=(p,d,q)).fit(method='mle', trend='nc')
-    res_arima = sm.tsa.ARIMA(y, order=(p,d,q)).fit(method='mle', trend='nc')
-    print "ARIMA summary"
-    print res_arima.summary()
-    #print "ARIMA AIC=", res_arima.aic
-    arima_plot = False
-    if arima_plot is True:
-        tsplot(pd.Series(res_arima.resid[2:]), lags=36)
+    try:
+        res_arima = sm.tsa.ARIMA(y, order=(pe,de,qu)).fit(method='mle', trend='nc')
+        print "ARIMA summary"
+        print res_arima.summary()
+        #print "ARIMA AIC=", res_arima.aic
+        arima_plot = True
+        if arima_plot is True:
+            msgtitle= ' for Timeseries:' + `indexts`+ ' using ARIMA(p,d,q):'+ `pe` + `de` + `qu`
+            plot_autoregression_on_ts(pd.Series(res_arima.resid[2:]), msgtitle,lags=36)
+    except:
+            warnings.warn("ERROR: The ARIMA model is not invertible!!!", Warning)
     return res_arima    
                                       
 def run_forecasting(res_arima):
-    pred = res_arima[0].predict()
-    print "Prediction", pred
-    # Pred is the predcited values ndarray
-    #pred_ci = pred.conf_int()
-    ax = res_arima[0].plot_predict()
-    #pred.predicted_mean.plot(ax=ax, label='Forecast', alpha=.7)
-    #ax.fill_between(pred.index,pred.iloc[:, 0],res_arima, color='k', alpha=.2)
-    plt.legend()
-    plt.title('Predictability of the signal at Cerebellum RF_OFF')
-    sns.despine()
+    """ forecasting for ARIMA(model)
+    """
+    # number of time series to plot
+    
+    nb_of_ts =  len(res_arima)
+    for i in range(0,nb_of_ts):
+        pred = res_arima[i].predict()
+        print "Prediction for ts:", i, " :", pred
+        #pred_ci = pred.conf_int()
+        ax = res_arima[i].plot_predict()
+        #pred.predicted_mean.plot(ax=ax, label='Forecast', alpha=.7)
+        #ax.fill_between(pred.index,pred.iloc[:, 0],res_arima, color='k', alpha=.2)å
+#        plt.legend()
+#        msgtitle = 'Predictability of the timseries:' + `i` + ' using ARIMA'
+#        plt.title(msgtitle)
+#        sns.despine()
 
 def extract_ts_from_one_voxel(image_file, voxel=[]):
     # Obtain the time series from a voxel
@@ -373,7 +535,8 @@ def extract_ts_from_brain(image_data, voxels_list=[]):
                 timeseries = pd.Series(image_data[label[0],label[1],label[2]], name='v%s' % counter_total)
                 # print timeseries.name
                 # concatenate Series with the df to create the dataframe with all the time series for each voxel 200 x totdims
-                df = pd.concat([df, timeseries], axis = 1 )
+                df[i,j,k]= timeseries
+                #df = pd.concat([df, timeseries], axis = 1 )
                 # to access time series by name of column 
                 #print df[df.columns[-1]]               
                 if np.mean(timeseries) > 10:
@@ -389,63 +552,88 @@ def extract_ts_from_brain(image_data, voxels_list=[]):
     print "Non stationary voxels:", counter_nonstat, "/", totdims
     return pvalues    
 
-
-def tsplot(y, lags=None, figsize=(10, 8)):  
-    fig = plt.figure(figsize=figsize)    
-    layout = (2, 2)           
-    ts_ax = plt.subplot2grid(layout, (0, 0), colspan=2)   
-    acf_ax = plt.subplot2grid(layout, (1, 0))  
-    pacf_ax = plt.subplot2grid(layout, (1, 1))   
-    y.plot(ax=ts_ax, title='Regression residuals ts residuals  y_t - \hat{y_t}') 
-    smt.graphics.plot_acf(y, lags=lags, ax=acf_ax)        
-    smt.graphics.plot_pacf(y, lags=lags, ax=pacf_ax)    
-    [ax.set_xlim(1.5) for ax in [acf_ax, pacf_ax]] 
-    sns.despine()                            
-    plt.tight_layout() 
-    return ts_ax, acf_ax, pacf_ax  
-
-def generate_surrogate_data(timeseries,n=100, nullmodel=None):
-    # Generate surrogate data time series from one time series get n realizations according to nullmodel (hypothesis)
-    print "Generating surrogate data for n=", n, "samples and Hypothesis=",  nullmodel
+def generate_surrogate_data(time_series, n, nullmodel=None):
+    """Generate surrogate data time series from the given time series 
+    The surrogate data consists on 'n' realizations according to the 'nullmodel'
+    Return a list (number of time serties) x (number of realizations) of surrogate data
+    Example: df = generate_surrogate_data(time_series, 100) # generates 100 samples for Gaussian noise
+    """
     df = pd.DataFrame()
+    same_spectra_as_raw = False
     if nullmodel is None:
         nullmodel='gaussian noise'
     if nullmodel == "gaussian noise":
         mu, sigma = 0, 1 # mean and std
+#    elif nullmodel == "arima":
+#        # generate ARMA model estimate the parameters with the original time series
+#        for i in np.arange(0, n):
+#            if same_spectra_as_raw:
+#                df[i] = generate_surrogate_data_same_spectrum(timeseries,n=100)
+#            else:
+#                mu, sigma = 0, 1 # mean and std
+#                noise = np.random.normal(mu, sigma, timeseries.size)
+#                residuals = run_arima_fit_ts(timeseries.values, order=None) 
+#                #pdb.set_trace()
+#                residuals = residuals.fittedvalues
+#                residuals = pd.Series(residuals) + noise[1:]
+#                df[i] = residuals
+                  
+    print "Generating surrogate data for n=", n, " samples and for Hypothesis=",  nullmodel
+    for ts_ix in range(0, time_series.shape[1]):
+        time_series[:,ts_ix] = pd.Series(time_series[:,ts_ix])
+        #df_surr = [] # List of surrogate data (number of time serties timseries) x (realizartions)
+        #generate surogate data randomizing the phase ifft(randomized_phase(fft())
         for i in np.arange(0, n):
-            noise = np.random.normal(mu, sigma, timeseries.size)
-            df = pd.concat([df, timeseries + noise], axis = 1 )
-    elif nullmodel == "arima":
-        # generate ARMA model estimate the parameters with the original time series
-        for i in np.arange(0, n):
-            residuals = run_arima_fit_ts(timeseries, order=None)
-            print "check is e changes", residuals
-            df = pd.concat([df, residuals], axis = 1 )
-    # calculate the correlation of the entire data frame as a (symmetric) matrix 
-    #print df.corr()
+            noise = np.random.normal(mu, sigma, time_series.shape[0])
+            #signalplusnoise = pd.Series(time_series[:,ts_ix] + noise)  
+            signalplusnoise = pd.Series(noise) 
+            df = pd.concat([df, signalplusnoise], axis = 1)                             
+    print "Surrogate data created with dimensions", df.shape
     return df
 
-def hypothesis_testing(original_ts, dataframe,lags=5):
-    timepoints, realizations = dataframe.shape
+def generate_surrogate_data_same_spectrum(ts, n):
+    # This fucntion is now OK, the inverse fourier needs to be onto a symmetric
+    # pdb.set_trace()
+    Xf = np.fft.rfft(ts.values)
+    Xf_mag = np.abs(Xf)
+    Xf_phase= np.angle(Xf)
+    Xf_phase_new = Xf_phase + np.random.uniform(-2*np.pi,2*np.pi, len(Xf_phase))
+    Xf_new  = Xf_mag*np.exp(1j*Xf_phase_new)
+    X_new = np.fft.ifft(Xf_new)
+    # the inverse Fourier must be real, it it is complex is because we have not symmetrize the phases!!
+    return pd.Series(np.abs(X_new)) 
+    
+def correlation_of_timeseries(original_ts, dataframe):
+    """It retunrs the mena of the correlation between two ts (pearson, spearman, kendall) 
+    for each ts with the n surrogate time series, the std and all the correlations 
+    Example: [corr_mean_perts, corr_std_perts, list_all_corr] = hypothesis_testing(original_ts, dataframe)
+    """
+    nb_of_points = original_ts.shape[0]
+    nb_of_ts = original_ts.shape[1]
+    realizations = dataframe.shape[1]/nb_of_ts
+    
     correlation_array = []
     correlation_array_std = []
     y = [] #array 2D with all pairwise correlations
-    if lags is None:
-        lags = 5
-    for i in np.arange(0, lags+1):
-        x = []
-        for j in np.arange(0, realizations):
-            ts_tocompare = dataframe.iloc[:,j].shift(i)
-            #pairwise 
-            corr = original_ts.corr(ts_tocompare)
-            #ts_tocompare = np.nan_to_num(ts_tocompare) #remove nans 
-            # Pearson correlation between the orginal time series and the null model for lag i
-            #corr = np.correlate(original_ts,ts_tocompare)
+    x = []
+    for i in range(0, nb_of_ts):
+        ts_orig = pd.Series(original_ts[:,i])
+        y=[]
+        for j in range(0, realizations): 
+            jindex = realizations*i + j
+            ts_tocompare = dataframe.iloc[:,jindex]
+            # shuffle the time series
+            ts_tocompare= ts_tocompare.sample(frac=1)
+            #pairwise correlation(default is pearson) betwee oroginal ts and one of the relizations
+            #method='pearson|kendall|spearman', min_periods=None
+            corr = ts_orig.corr(ts_tocompare, method='spearman')
+            #pdb.set_trace()
+            print "correlation for i:", i, " jindex:", jindex, " =",corr
             x.append(corr)
         y.append(x)
-        correlation_array.append(np.mean(x))   
-        correlation_array_std.append(np.std(x))
-        print "The mean correlation for shift=", i, " is:", correlation_array[i], "std=",  correlation_array_std[i]
+        print "The correlation mean and std for timeseries:", i, " is ", np.mean(y), np.std(y)    
+        correlation_array_std.append(np.std(y))
+        correlation_array.append(np.mean(y))                     
     return correlation_array, correlation_array_std, y 
 
 def plot_correlation_histogram(correlation_array, correlation_array_std, all_correlations, lags):
@@ -453,6 +641,7 @@ def plot_correlation_histogram(correlation_array, correlation_array_std, all_cor
     # Plot the bar of the mean correlation between the original ts and the n realizations for each lag
     x_pos = len(correlation_array)
     listlags = ('1','2','3','4','5','6','7','8','9','10')
+    fig = plt.figure()
     plt.bar(np.arange(x_pos), correlation_array[:], align='center', alpha=0.5, yerr=correlation_array_std[:])
     plt.xticks(np.arange(x_pos), listlags)
     plt.ylabel('Correlation ts~ts shifted')
@@ -479,13 +668,234 @@ def calculate_nonlinearmeasures(timeseries):
     # https://pypi.python.org/pypi/nolds/0.2.0
     # convert Series into arrar
     timeseries = timeseries.values
-    emb_dim=1
-    print timeseries
+    # corr_dim = []
+    # emb_dim is a delay embedding of the time series, the larger the higher dimension can be reconstructed
+    # We need 1 because we are dealing with one dimensional time series
+    emb_dim = 1 
+    # We call corr_dimension with rvals by default (iterable of float): rvals=logarithmic_r(0.1 * std, 0.5 * std, 1.03))
+    # http://www.scholarpedia.org/article/Grassberger-Procaccia_algorithm        
     corr_dim = nolds.corr_dim(timeseries, emb_dim)
-    print "The correlation dimension (measure of the fractal dimension of a time series) is:", corr_dim
+    print "The correlation dimension with the Grassberger-Procaccia algorithm is:", corr_dim
+    #print timeseries
+    #for i in emb_dim:
+        #corr_dim.append(nolds.corr_dim(timeseries, i))
+        #print "The correlation dimension (measure of the fractal dimension of a time series) is:", corr_dim
     lyap = nolds.lyap_r(timeseries) # lyap_r for laargest exponent, lyap_e for the whole spectrum
     print "The largest positive Lyapunov exponents -initial conditions sensibility) is:", lyap
     ap_entropy = nolds.sampen(timeseries)
     print "The sample entropy  (complexity of a time-series, based on approximate entropy)", ap_entropy
     nonlmeasures = {'corr_dim':corr_dim,'sampen':ap_entropy,'lyap':lyap}
     return nonlmeasures
+
+def test_significance(orig_ts, surrogate_df):
+    """"Significance test of the original time series versus the surrogate data frame genererated by the null model
+    """
+    ts_dict, df_dict,  = [], []
+    rows, cols = surrogate_df.shape
+    if isinstance(orig_ts, pd.core.frame.DataFrame):
+        #original data is n time series, probably for the entire brain
+        print "Multivariate original time series, do KS test or Mann-Whitney test"
+    elif isinstance(orig_ts,np.ndarray):
+        for i in range(0, orig_ts.shape[1]):
+            orig_ts = pd.Series(orig_ts)
+            ts_dict = calculate_nonlinearmeasures(orig_ts)
+            # CONTINUE HERE!!!!
+            
+    elif isinstance(orig_ts, pd.core.frame.Series):
+        print "Test significance for univariate time series against the null model"
+        ts_dict = calculate_nonlinearmeasures(orig_ts)
+        rows, cols = surrogate_df.shape
+        for i in range(cols):
+            df_dict.append(calculate_nonlinearmeasures(surrogate_df[i]))
+        # Compare time series statistics with df statistics  
+    # df_dict is a tuple, df_dict[0] is pandas.core.frame.DataFrame , df_dict[1]  is a list containin the statistics 
+    # resusl[1][99]['lyap'], resusl[1][0]['sampen'], resusl[1][99]['corr_dim']
+    return ts_dict, df_dict
+
+def plot_significance_test(ts_sig_test, df_sig_test):
+    # Plot scatter plot with statistics for the surrogate data versus the original dat set
+    print "Plotting Lyapunov Exponent and Sample Entropy in a scatter plot"
+    #max_emb_dim = 4
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')    
+    ts_y = ts_sig_test['lyap']
+    ts_x = ts_sig_test['sampen']
+    ts_z = ts_sig_test['corr_dim']
+    df_x, df_y, df_corr = [], [], []
+    ax.scatter(ts_x, ts_y, ts_z, c='red', alpha=0.5)
+    for i in np.arange(len(df_sig_test)):
+        df_y.append(df_sig_test[i]['lyap'])
+        df_x.append(df_sig_test[i]['sampen'])   
+        #df_corr.append(df_sig_test[i]['corr_dim'][0:max_emb_dim])
+        df_corr.append(df_sig_test[i]['corr_dim'])       
+    ax.scatter(df_x, df_y, df_corr, c='blue', alpha=0.5)
+    ax.set_xlabel('Sample entropy')
+    ax.set_ylabel('Lyapunov exponent')
+    ax.set_zlabel('Correlation dimension')
+    #ax.savefig('samendLyapunovcorr_dim.jpg')
+    
+    # Plot correlation dimension
+#    fig2 = plt.figure()
+#    
+#    dimensions = np.arange(1,max_emb_dim+1)
+#    ts_sig_test['corr_dim'][0:max_emb_dim]
+#    plt.scatter(dimensions, ts_sig_test['corr_dim'][0:max_emb_dim], c='red', alpha=0.5)    
+#    #traspose the list of correlation values to have them index by the dimension
+#    df_corr= map(list, zip(*df_corr))
+#    for xe, ye in zip(dimensions, df_corr[:]):
+#        #pdb.set_trace()
+#        plt.scatter([xe] * len(ye), ye)
+#        
+#    plt.xlabel('dimension')
+#    plt.ylabel('Correlation dimension')
+#    fig2.suptitle('correlation dimension test', fontsize=12)
+#    plt.xticks(range(1,max_emb_dim+1))
+#    fig2.savefig('corr_dimension.jpg')
+
+def ts_similarity(df1, df2):    
+    #Calculate dynamic time warping between time series
+    # return a matrix nxn fn is the number of time series Mij is the DTW distamce between two time series
+    DTW_list,KStest = [], []
+    cols1, cols2 = 1, 1
+    if isinstance(df1, pd.core.frame.Series) and isinstance(df2, pd.core.frame.Series):
+        distance, path = ts_DTW(df1, df2)
+        DTW_list = distance
+        print "DTW of the two time series is", distance
+        # The Kolmogorov–Smirnov statistic quantifies a distance between 
+        KStest = ts_KS_2samples(df1, df2)[1]
+        
+    elif isinstance(df1, pd.core.frame.Series):
+        if isinstance(df2, pd.core.frame.DataFrame):
+            print "Calculating DTW of ts1 versus dataframe2"
+            rows2, cols2 = df2.shape            
+            for i in np.arange(cols2):
+                y = df2[i]
+                distance, path = ts_DTW(df1, y)
+                DTW_list.append(distance)
+                #pdb.set_trace()
+                KStest.append((ts_KS_2samples(df1, y)[1]))
+                
+    elif isinstance(df2, pd.core.frame.Series):        
+        if isinstance(df1, pd.core.frame.DataFrame):
+            print "Calculating DTW of ts2 versus dataframe1"
+            rows1, cols1 = df1.shape
+            for i in np.arange(cols1):
+                x = df1[i]
+                distance, path = ts_DTW(x, df2)
+                KStest = ts_KS_2samples(x, df2)
+                DTW_list.append(distance)
+                KStest.append(KStest)
+    elif isinstance(df1, pd.core.frame.DataFrame) and isinstance(df2, pd.core.frame.DataFrame):
+       print "Calculating DTW of two dataframes"
+       rows1, cols1 = df1.shape
+       rows2, cols2 = df2.shape
+       for i in np.arange(cols1):
+           for j in np.arange(cols2):
+               x = df1[i]
+               y = df2[j]
+               distance, path = ts_DTW(x, y)
+               #ts_KS_2samples(x, y)
+               DTW_list.append(distance)
+               KStest.append(ts_KS_2samples(x, y)[1])
+    print "The Total DTW is:", DTW_list , "KS p-value test is:",  KStest[1]         
+    
+    plot_Heatmap = True
+    if plot_Heatmap:
+        plt.figure()
+        DTW_array = np.asarray(DTW_list)
+        DTW_array = DTW_array.reshape(cols1, cols2)
+        ax = sns.heatmap(DTW_array, xticklabels=5, yticklabels=False)
+        ax.set(xlabel='null model voxels', ylabel='observed ts')
+        ax.set_title('Dynamic Time Warping distance')
+        KS_array = np.asarray(KStest)
+        #pdb.set_trace()
+        #KS_array = KS_array.reshape(cols1, cols2)
+        plt.figure()
+        ax = sns.heatmap([KS_array], xticklabels=5, yticklabels=False)
+        ax.set(xlabel='null model voxels', ylabel='observed ts', title = 'KS 2 samples')
+        #ax.set_title('KS 2 sample test')
+        
+    return DTW_list, KStest   
+         
+
+            
+def ts_DTW(x, y):
+    distance, path = fastdtw(x, y, dist=euclidean)
+    return distance, path 
+
+def ts_KS_2samples(ts1, ts2):
+    # Calcualtes the Kolmogorov Smirnov statistic for 2 samples, or time series
+    # It is a two-sided test for the null hypothesis that 2 independent samples are drawn from the same continuous distribution.
+    KS, pvalue = stats.ks_2samp(ts1, ts2)
+    KSres = [KS, pvalue]
+    return KSres
+        
+def fourier_spectral_estimation(ts, image_params=None):
+    """Calculate the PSD estimate from a time series using Welch
+    The power spectrum calculates the area under the signal plot using the discrete Fourier Transform
+    The PSD assigns units of power to each unit of frequency and thus, enhances periodicities 
+    Welch’s method computes an estimate of the power spectral density by dividing 
+    the data into overlapping segments, computing a modified periodogram for each segment and averaging the periodograms.
+    by default constant detrend, one-sided spectrum, 
+    noverlap = nperseg / 2 (noverlap is 0, this method is equivalent to Bartlett’s method). 
+    scaling 'density'V**2/Hz 'spectrum' V**2.
+    returns array of sampling frerquencies and the power spectral density of the ts
+    
+    Example: f, Pxx_den = fourier_spectral_estimation(ts)
+    
+    """
+     
+    #data_img, image_params = load_fmri_image_name()
+    #data = np.zeros(1, 1)  # initialize for number of rois and number of samples
+    # The cadillac of spectral estimates is the multi-taper estimation, 
+    # which provides both robustness and granularity, but notice that 
+    # this estimate requires more computation than other estimates  
+    psd_results = []
+    plotPxx = True
+    if plotPxx is True: 
+        fig, ax = plt.subplots(ts.shape[1], sharex=True, sharey=True)
+    if image_params is None: image_params = load_fmri_image_name()[1]
+    for i in range(0, ts.shape[1]):
+        #nperseg is the length of each segment, 256 by default
+        nperseg=20
+        f, Pxx_den = signal.welch(ts[:,i], image_params['fs'], nperseg=nperseg, detrend='constant', nfft =image_params['nfft'], scaling = 'density')  
+        pxx = [f, Pxx_den]
+        psd_results.append(pxx)
+        print "Timeseries:", i," frequency sampling", f, " Pxx_den:", Pxx_den, " Max Amplitude is:", np.mean(Pxx_den.max())
+        if plotPxx is True:
+            #plt.figure()
+            #ax[i].semilogy(f, Pxx_den)
+            ax[i].plot(f, Pxx_den)
+            ax[i].set_xlabel('frequency [Hz]')
+            ax[i].set_ylabel('PSD [V**2/Hz]')
+            ax[i].set_title('PSD')
+    print psd_results        
+    return  psd_results   
+
+def get_MNI_coordinates(label):
+    #get_MNI_coordinates return the dictionary MNI coordinates of the brain structure or network label
+    dim_coords = []
+    if label is 'DMN':
+        # http://sprout022.sprout.yale.edu/mni2tal/mni2tal.html
+        # DMN coordinates from HEDDEN ET AL (2009) PCC
+        # DMN = PCC (-5, -53, 41) is BA31 http://www.sciencedirect.com/science/article/pii/S187892931400053X
+        # ,MPFC (0, 52, -6)  LLPC (-48, -62, 36) RLPC (46, -62, 32)
+        label = [
+                'Posterior Cingulate Cortex',
+                'Left Temporoparietal junction',
+                'Right Temporoparietal junction',
+                'Medial prefrontal cortex'
+                ] 
+        # Dictionary of network with MNI components. 
+        # http://nilearn.github.io/auto_examples/03_connectivity/plot_adhd_spheres.html#sphx-glr-auto-examples-03-connectivity-plot-adhd-spheres-py
+        # dmn_coords = [(0, -52, 18), (-46, -68, 32), (46, -68, 32), (1, 50, -5)] 
+        dim_coords = {label[0]:(0, -52, 18),label[1]:(-46, -68, 32), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from nilearn page
+        #dim_coords = {label[0]:(0, -52, 18),label[1]:(0, -52, 20), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from HEDDEN ET AL (2009) PCC
+        
+        #dim_coords = [(-5, -53, 41), (0, 52, -6), (-48, -62, 36), (46, -62, 32)]
+    elif label is 'SN':
+        # Salience network
+        dim_coords = []    
+    else: 
+        print " ERROR: label:", label, " do not found, returning empty list of coordinates!"   
+    return dim_coords   
