@@ -15,6 +15,7 @@ import statsmodels.api as sm
 import statsmodels.tsa.api as smt
 import statsmodels.formula.api as smf
 from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import grangercausalitytests
 from scipy.io import loadmat  # this is the SciPy module that loads mat-files
 from scipy.spatial.distance import euclidean
 from scipy import stats
@@ -34,13 +35,12 @@ from nipy.labs.viz import plot_map, mni_sform, coord_transform
 import seaborn as sns
 from fastdtw import fastdtw
 import nolds
-
+import itertools
 import nitime
 # Import the time-series objects:
 from nitime.timeseries import TimeSeries
 # Import the analysis objects:
-from nitime.analysis import SpectralAnalyzer, FilterAnalyzer, NormalizationAnalyzer
-
+from nitime.analysis import SpectralAnalyzer, FilterAnalyzer, NormalizationAnalyzer, GrangerAnalyzer
 import plotly
 plotly.tools.set_credentials_file(username='borriquear', api_key='ZGW7Nrb6GptJzSV7W6VY')
 import plotly.plotly as py
@@ -69,6 +69,7 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
     else:
         masker = load_masker(dim_coords)
     time_series = masker.fit_transform(epi_file)
+    timepoints,  nb_oftseries = time_series.shape
     print "Plotting time series"
     plot_ts_network(time_series, dim_coords.keys())
 #    if time_series.shape[0] != epi_params:
@@ -91,52 +92,51 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
 #    kind_of_correlation = 'correlation'
 #    corr_matrix = plot_ts_connectome(time_series, kind_of_correlation)
 #    print corr_matrix
-    fourier_analysis = True
+    #Granger causality of the time series
+    grangerresult = test_of_grangercausality(time_series)
+    # Calculate the G causality among pairs of time series  
+    [corrm_xy, corrm_yx, listoffreqs]  = compute_granger_pair_of_ts(time_series)
+    for ff in range(0, len(listoffreqs)):
+        print "XY Granger at freq:", listoffreqs[ff], " =", corrm_xy[:,:,listoffreqs[ff]]
+        print "YX Granger at freq:", listoffreqs[ff], " =", corrm_yx[:,:,listoffreqs[ff]]
+        # average on last dimension (frequency and plot)
+        #fig03 = drawmatrix_channels(g1, roi_names, size=[10., 10.], color_anchor=0)
+    return 
+    fourier_analysis = False
     if fourier_analysis is True:
         print "Calculating the PSD of the time series"
         psd_original = fourier_spectral_estimation(time_series)
+        
     surrogate_analysis = True
     if surrogate_analysis is True:
         num_realizations = 10
         nullmodel = 'gaussian noise'
         surrogate_data = generate_surrogate_data(time_series, num_realizations, nullmodel)
         print "Built the surrogate_data data frame dimesnion:", surrogate_data.shape
-        correlation_ts = correlation_of_timeseries(time_series, surrogate_data)
-        print "The correlation mean  between original time series and the surrogate is:, ", correlation_ts[0], " \n std is:", correlation_ts[1]
-        #generate surrogate data wirt other models: orsntein-uhlenbeck regrression to the mean(homeostatic)
-        
-        ts_sig_test, df_sig_test = test_significance(time_series, surrogate_data)
-        
-        
-        
-    
-def test_surrogate_data():
-    # Run surrogate data test for an EPI image and one voxel, generate the surrogate data (dataframe)
-    
-    #return
-    #voxel = [66,90,20]
-    lags =10
-    num_realizations = 100
-
-    surrogate_data = generate_surrogate_data(timeseries, num_realizations, 'gaussian noise')
-    correlation_perlag = hypothesis_testing(timeseries, surrogate_data,lags)
-    #return timeseries
-    # plor correlation of time series normalized (ACF == 1 for shift == 0)
-    correlation_perlag_mean= correlation_perlag[0][1:]
-    correlation_perlag_std= correlation_perlag[1][1:]
-    all_correlations = correlation_perlag[2]
-    #return all_correlations
-    plot_correlation_histogram(correlation_perlag_mean, correlation_perlag_std, all_correlations, lags)
-    # generate surrogate data for ARMA test
-    surrogate_data_arima = generate_surrogate_data(timeseries, num_realizations, 'arima')
-    #mydict = calculate_nonlinearmeasures(timeseries)
-    # Test for significance
-    #pdb.set_trace()
-    ts_sig_test, df_sig_test = test_significance(timeseries, surrogate_data_arima)
-    print "Calculate time serie similarity"
-    ts_sim = ts_similarity(timeseries, surrogate_data_arima)
-    plot_significance_test(ts_sig_test, df_sig_test)
-    # Connectivity Analysis of the DFM
+        correlation_ts = correlation_of_ts_vs_surrogate(time_series, surrogate_data)
+        print "The correlation mean  between original time series and the surrogate is:, ", correlation_ts[0], \
+        "\n and the std is:", correlation_ts[1]
+        #generate surrogate data with other models: orsntein-uhlenbeck regrression to the mean(homeostatic)
+        print "Computing statistics for non linear quantities(correlation dimension, \
+        Lyapunov exponents and sample Entropy for the Original time series and \
+        the surrogate data generated for the ",nullmodel , " model"
+        nonlstats_orig= []
+        nonlstats_surrogate = []
+        for i in range(0,nb_oftseries):
+            nonlstats_ith_surrogate = []
+            original_stats = compute_nonlinear_statistics(time_series[:,i])
+            print "The nonlinear statistics for ith:", i, "  Original timeseries: ", original_stats
+            nonlstats_orig.append(original_stats)
+            for j in range(0, num_realizations): 
+                jindex = num_realizations*i + j
+                surrogate_stats = compute_nonlinear_statistics(surrogate_data.iloc[:,jindex])
+                nonlstats_ith_surrogate.append(surrogate_stats)
+            nonlstats_surrogate.append(nonlstats_ith_surrogate)    
+        print "The nonlinear statistics for the Original time series is :", nonlstats_orig, 
+        "\n to access the resulst: nonlstats_orig[0]['lyap'|'corr_dim'|sampen] \n"
+        print "\n\n The nonlinear statistics for the Surrogate time series is :", nonlstats_surrogate, 
+        "\n to access the resulst: nonlstats_surrogate[0][9]['lyap'|'corr_dim'|sampen] \n"
+        ts_and_ps = ttest_orig_vs_surrogate(nonlstats_orig, nonlstats_surrogate, realizations=num_realizations)
 
 
 def plot_ts_network(ts, lab):
@@ -272,6 +272,44 @@ def createDataFrame_from_image(image_file=None, masker=None):
         time_series = masker.fit_transform(image_file)   
     return time_series
 
+
+def compute_granger_pair_of_ts(time_series):
+    """Calculate the Granger causality for pairs of tiem series
+    """
+    
+    image_params = load_fmri_image_name()[1]
+    #frequencies = np.linspace(0,0.2,129)
+    combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
+    time_series = np.transpose(time_series)
+    time_series = nitime.timeseries.TimeSeries(time_series, sampling_interval=image_params['TR'])
+    
+    granger_sys = GrangerAnalyzer(time_series, combinations)
+    listoffreqs = granger_sys.frequencies[:]
+    corr_mats_xy = granger_sys.causality_xy[:,:,:]
+    corr_mats_yx = granger_sys.causality_yx[:,:,:]
+    return [corr_mats_xy, corr_mats_yx, listoffreqs]
+
+def test_of_grangercausality(time_series):
+    """Test for Granger Cauality in the original time series. The Null hypothesis for grangercausalitytests is that the time series \
+    in the second column, x2, does NOT Granger cause the time series in the first column, x1. \
+    The null hypothesis for all four test is that the coefficients corresponding \
+    to past values of the second time series are zero.
+    """
+    nb_of_timeseries = len(time_series)
+    Gres_all = []
+    if nb_of_timeseries < 2:
+         warnings.warn("ERROR: We cant calculate Granger for only 1 tie series", Warning)
+    else:
+        combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
+        for co in combinations:
+            pairofseries = [pd.Series(time_series[:,co[0]]), pd.Series(time_series[:,co[1]])]
+            pairofseries = np.asarray(pairofseries)
+            pairofseries = np.transpose(pairofseries)
+            print " Calculating Granger test for timeseries pair:", co
+            grangerres = grangercausalitytests(pairofseries, maxlag=10, verbose=False)
+            Gres_all.append(grangerres)
+        return Gres_all
+    
 def run_collinearity_on_df(y):
     """Test for multicollinearity for y (Pandas.time series or ndarray) 
     Multicollinearity (collinearity) is a phenomenon in which two or more predictor variables
@@ -553,7 +591,10 @@ def extract_ts_from_brain(image_data, voxels_list=[]):
     return pvalues    
 
 def generate_surrogate_data(time_series, n, nullmodel=None):
-    """Generate surrogate data time series from the given time series 
+    """Generate surrogate data time series from the given time series sharing 
+    some properties of the observed time series, for example, mean , variance or power spectrum 
+    but are otherwise random as specified by the null hypothesis
+    Ref: http://www.sciencedirect.com/science/article/pii/016727899290102S
     The surrogate data consists on 'n' realizations according to the 'nullmodel'
     Return a list (number of time serties) x (number of realizations) of surrogate data
     Example: df = generate_surrogate_data(time_series, 100) # generates 100 samples for Gaussian noise
@@ -593,7 +634,6 @@ def generate_surrogate_data(time_series, n, nullmodel=None):
 
 def generate_surrogate_data_same_spectrum(ts, n):
     # This fucntion is now OK, the inverse fourier needs to be onto a symmetric
-    # pdb.set_trace()
     Xf = np.fft.rfft(ts.values)
     Xf_mag = np.abs(Xf)
     Xf_phase= np.angle(Xf)
@@ -603,8 +643,8 @@ def generate_surrogate_data_same_spectrum(ts, n):
     # the inverse Fourier must be real, it it is complex is because we have not symmetrize the phases!!
     return pd.Series(np.abs(X_new)) 
     
-def correlation_of_timeseries(original_ts, dataframe):
-    """It retunrs the mena of the correlation between two ts (pearson, spearman, kendall) 
+def correlation_of_ts_vs_surrogate(original_ts, dataframe):
+    """It returns the mean of the correlation between two ts (pearson, spearman, kendall) 
     for each ts with the n surrogate time series, the std and all the correlations 
     Example: [corr_mean_perts, corr_std_perts, list_all_corr] = hypothesis_testing(original_ts, dataframe)
     """
@@ -662,55 +702,95 @@ def plot_correlation_histogram(correlation_array, correlation_array_std, all_cor
         # add a 'best fit' line
         plt.show()
         
-def calculate_nonlinearmeasures(timeseries):
-    # Calculate significant statistics (non linear measures) of one time series
-    # We use the numpy-based library NOnLinear measures for Dynamical Systems (nolds) 
-    # https://pypi.python.org/pypi/nolds/0.2.0
-    # convert Series into arrar
-    timeseries = timeseries.values
-    # corr_dim = []
-    # emb_dim is a delay embedding of the time series, the larger the higher dimension can be reconstructed
-    # We need 1 because we are dealing with one dimensional time series
-    emb_dim = 1 
-    # We call corr_dimension with rvals by default (iterable of float): rvals=logarithmic_r(0.1 * std, 0.5 * std, 1.03))
-    # http://www.scholarpedia.org/article/Grassberger-Procaccia_algorithm        
-    corr_dim = nolds.corr_dim(timeseries, emb_dim)
-    print "The correlation dimension with the Grassberger-Procaccia algorithm is:", corr_dim
-    #print timeseries
-    #for i in emb_dim:
-        #corr_dim.append(nolds.corr_dim(timeseries, i))
-        #print "The correlation dimension (measure of the fractal dimension of a time series) is:", corr_dim
-    lyap = nolds.lyap_r(timeseries) # lyap_r for laargest exponent, lyap_e for the whole spectrum
-    print "The largest positive Lyapunov exponents -initial conditions sensibility) is:", lyap
-    ap_entropy = nolds.sampen(timeseries)
-    print "The sample entropy  (complexity of a time-series, based on approximate entropy)", ap_entropy
-    nonlmeasures = {'corr_dim':corr_dim,'sampen':ap_entropy,'lyap':lyap}
-    return nonlmeasures
-
-def test_significance(orig_ts, surrogate_df):
-    """"Significance test of the original time series versus the surrogate data frame genererated by the null model
+def compute_nonlinear_statistics(timeseries, nb_of_timepoints=None):
+    """Calculate a battery of significant statistics (non linear measures) for a time structure. 
+    The argument "timeseries" can be a Pandas dataframe, Pandas time series or a ndarray.
+    The measures that are calculated are: correlation dimension, sample entropy,
+    Lyapunov exponents. It calls to compute_nonlinear_statistics_ts for eac time series
+    We use the numpy-based library NonLinear measures 
+    for Dynamical Systems (nolds) 
+    https://pypi.python.org/pypi/nolds/0.2.0
     """
-    ts_dict, df_dict,  = [], []
-    rows, cols = surrogate_df.shape
-    if isinstance(orig_ts, pd.core.frame.DataFrame):
-        #original data is n time series, probably for the entire brain
-        print "Multivariate original time series, do KS test or Mann-Whitney test"
-    elif isinstance(orig_ts,np.ndarray):
-        for i in range(0, orig_ts.shape[1]):
-            orig_ts = pd.Series(orig_ts)
-            ts_dict = calculate_nonlinearmeasures(orig_ts)
-            # CONTINUE HERE!!!!
-            
-    elif isinstance(orig_ts, pd.core.frame.Series):
-        print "Test significance for univariate time series against the null model"
-        ts_dict = calculate_nonlinearmeasures(orig_ts)
-        rows, cols = surrogate_df.shape
-        for i in range(cols):
-            df_dict.append(calculate_nonlinearmeasures(surrogate_df[i]))
-        # Compare time series statistics with df statistics  
-    # df_dict is a tuple, df_dict[0] is pandas.core.frame.DataFrame , df_dict[1]  is a list containin the statistics 
-    # resusl[1][99]['lyap'], resusl[1][0]['sampen'], resusl[1][99]['corr_dim']
-    return ts_dict, df_dict
+    if nb_of_timepoints is None: nb_of_timepoints = 116
+    if isinstance(timeseries, pd.core.frame.DataFrame):
+        #rename time series tructure
+        dataframe = timeseries
+        print "Time series is a data frame, calling to calculate_nonlinearmeasures for each time series"
+        for i in range(0, dataframe.shape[1]):
+            x = []
+            ts_toanalyze = dataframe.iloc[:,i].values
+            ts_measures = compute_nonlinear_statistics_nda(ts_toanalyze)
+            print "The non linear statistics for the ith:", i, " surrogate data is: ", ts_measures
+            x.append(ts_measures)
+        return x    
+    elif isinstance(timeseries, pd.core.frame.Series):
+        print "Calling to calculate_nonlinearmeasures for the Pandas time series..."
+        timeseries = timeseries.values
+    elif isinstance(timeseries,np.ndarray):
+        print "Calling to calculate_nonlinearmeasures for the time series ndarray..."
+    return compute_nonlinear_statistics_nda(timeseries)
+       
+
+def compute_nonlinear_statistics_nda(timeseries):
+    """Calculate a battery of significant statistics (non linear measures) of 
+    a given Pandas time series.
+    """
+    #print "\t Calculating the correlation dimension (degrees of freedom) using Grassberger-Procaccia_algorithm ..."
+    # http://www.scholarpedia.org/article/Grassberger-Procaccia_algorithm
+    #emb_dim=1 because we are dealing with one dimensional time series
+    emb_dim = 1 
+    #Call corr_dimension with rvals by default (iterable of float): rvals=logarithmic_r(0.1 * std, 0.5 * std, 1.03))
+    corr_dim = nolds.corr_dim(timeseries, emb_dim)
+    #print "\t Calculating the Lyapunov exponents(initial conditions sensibility)) of the time series..."
+    lyap = nolds.lyap_r(timeseries) # lyap_r for largest exponent, lyap_e for the whole spectrum
+    #print "\t Calculating the sample entropy(complexity of time-series) based on approximate entropy..."
+    ap_entropy = nolds.sampen(timeseries)
+    nonlmeasures = {'corr_dim':corr_dim,'sampen':ap_entropy,'lyap':lyap}
+    return nonlmeasures   
+
+def stat_hyp_test_orig_vs_surr(orig_ts, surrogate_df):
+    """"Significance test of the original time series versus the surrogate data
+     frame genererated by the null model using p-values with rank statistics. For example, 
+     if the observed time series in in the lower one percentile of all surrogate statistics 
+     (for at least n=100 surrogates generated) then a two-sided p-value p=0.02 could be quoted. 
+    """
+    print "Computing a t-test ..."
+    tandpvalues = ttest_orig_vs_surrogate(orig_ts, surrogate_df)
+    return tandpvalues 
+
+def ttest_orig_vs_surrogate(orig_stats, surrogate_stats, realizations=None):
+    """ t-test to test whether the mean of the original time series \
+    sample differs in a statistically significant way from the surrogate data set.
+    The arguments are type list
+    """
+    print "\n"
+    labels = ['corr_dim','lyap','sampen']
+    nb_ts = len(orig_stats)
+    if realizations is None: realizations = len(surrogate_stats[0])
+    if realizations != len(surrogate_stats[0]): 
+        print "ERROR in the numbr of realization in the surtrogate data"
+        return -1
+    tstats = []
+    pvalues = []  
+    
+    for i in range(0,nb_ts):
+        orig_stats_ith =  orig_stats[i]
+        surrogate_stats_jth = []
+        t_ith=[]
+        prob_ith = []
+        for labsix in range(0,len(labels)):
+            surrogate_stats_jth = surrogate_stats[i][:]
+            metric_surr = []
+            for j in range(0,len(surrogate_stats_jth)):
+                metric_surr.append(surrogate_stats_jth[j][labels[labsix]])
+            [t, p] = stats.ttest_1samp(metric_surr, orig_stats_ith[labels[labsix]])
+            print "ts: ", i, "ttest for :" , labels[labsix], "  t:", t, " p:", p
+            t_ith.append(t)
+            prob_ith.append(p)
+        tstats.append(t_ith)
+        pvalues.append(prob_ith)         
+    return [tstats, pvalues]          
+                         
 
 def plot_significance_test(ts_sig_test, df_sig_test):
     # Plot scatter plot with statistics for the surrogate data versus the original dat set
