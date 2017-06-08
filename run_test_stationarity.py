@@ -10,6 +10,9 @@ import sys
 import pandas as pd
 import numpy as np
 import os
+from operator import itemgetter 
+from collections import OrderedDict
+
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import statsmodels.tsa.api as smt
@@ -25,8 +28,7 @@ from datetime import datetime, date, time
 import statsmodels.tsa.stattools as tsa
 import nibabel as nib
 from nilearn import input_data
-from nilearn.input_data import NiftiLabelsMasker
-from nilearn.input_data import NiftiMapsMasker
+from nilearn.input_data import NiftiLabelsMasker, NiftiMasker, NiftiMapsMasker 
 from nilearn import plotting
 from nilearn import datasets
 from nilearn import input_data
@@ -38,17 +40,63 @@ import nolds
 import itertools
 import nitime
 # Import the time-series objects:
-from nitime.timeseries import TimeSeries
+import nitime.timeseries as ts
 # Import the analysis objects:
-from nitime.analysis import SpectralAnalyzer, FilterAnalyzer, NormalizationAnalyzer, GrangerAnalyzer
-import plotly
-plotly.tools.set_credentials_file(username='borriquear', api_key='ZGW7Nrb6GptJzSV7W6VY')
+from nitime.analysis import SpectralAnalyzer, FilterAnalyzer, NormalizationAnalyzer, GrangerAnalyzer, SeedCoherenceAnalyzer, CoherenceAnalyzer
+from plotly import __version__
 import plotly.plotly as py
+py.plotly.tools.set_credentials_file(username='borriquear', api_key='ZGW7Nrb6GptJzSV7W6VY')
 import plotly.graph_objs as go
+from plotly.offline import download_plotlyjs, init_notebook_mode, plot, iplot
+from nitime.viz import drawmatrix_channels, drawgraph_channels
 from mpl_toolkits.mplot3d import Axes3D
 import warnings
 
 
+def test_clustering_in_rs(epi_file=None):
+    """Hierarchical clustering (Ward) in rs data
+    """
+    from sklearn.cluster import FeatureAgglomeration
+    from sklearn.feature_extraction import image
+    import time
+    from nilearn.plotting import plot_roi, plot_epi, show
+    from nilearn.image import mean_img
+
+    
+    if epi_file is None:
+        [epi_file, epi_params]= load_fmri_image_name()
+        print " EPI file:", epi_file, " EPI params:", epi_params
+    
+    nifti_masker = input_data.NiftiMasker(memory='nilearn_cache',
+                                      mask_strategy='epi', memory_level=1,
+                                      standardize=False)  
+    #compute the mask and extracts the time series form the file(s)
+    fmri_masked = nifti_masker.fit_transform(epi_file)
+    #retrieve the nup array of the mask
+    mask = nifti_masker.mask_img_.get_data().astype(bool)
+    #compute the connectivity matrix for the mask
+    shape = mask.shape
+    connectivity = image.grid_to_graph(n_x=shape[0], n_y=shape[1],
+                                   n_z=shape[2], mask=mask)
+    
+    start = time.time()  
+    #FeatureAgglomeration clustering algorithm from scikit-learn 
+    n_clusters=100
+    ward = FeatureAgglomeration(n_clusters, connectivity=connectivity,
+                            linkage='ward', memory='nilearn_cache')
+    ward.fit(fmri_masked)
+    print("Ward agglomeration %d clusters: %.2fs" % (n_clusters, time.time() - start))
+    #visualioze the results
+    labels = ward.labels_ + 1
+    labels_img = nifti_masker.inverse_transform(labels)
+    mean_func_img = mean_img(epi_file)
+    first_plot = plot_roi(labels_img, mean_func_img, title="Ward parcellation V-Alive",
+                      display_mode='ortho', cut_coords=(0,-52,18))
+    cut_coords = first_plot.cut_coords
+    print cut_coords
+    labels_img.to_filename('parcellation.nii')
+
+    
 def test_connectome_timeseries(epi_file=None, dim_coords=None):
     """ connectome time series characterization
     Run tests for collinearity, run_autoregression_on_df, stationarity and calculates the connectome of the given coords
@@ -59,7 +107,7 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
     """
     if epi_file is None:
         [epi_file, epi_params]= load_fmri_image_name()
-        print " EPI file:", epi_file, " EPI params:", epi_params
+        print " EPI file:", epi_file, " EPI params:", epi_params    
     if dim_coords is None:
         # Coordinates mask: masker = load_masker(dim_coords=[(x,y,z), (x,y,z)])
         # Harvard atlas mask: masker = load_masker(dim_coords='cort-maxprob-thr25-2mm')
@@ -70,44 +118,69 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         masker = load_masker(dim_coords)
     time_series = masker.fit_transform(epi_file)
     timepoints,  nb_oftseries = time_series.shape
-    print "Plotting time series"
+    print "Plotting time series", timepoints,  nb_oftseries
     plot_ts_network(time_series, dim_coords.keys())
-#    if time_series.shape[0] != epi_params:
-#        warnings.warn("The time series number of points is !=116 check your bold_data.nii !!", Warning)
-#    print "Masker is:", masker, " \n \t and time series shape", time_series.shape #, ", time_series", time_series
-#    
-#    # Characterize the time series
-#    print "Testing for collinearity in the time series"
-#    res_lagged = run_collinearity_on_df(time_series)
-#    print "Calling to run_autoregression_on_ts(y) to test for autocorrelation in the time series" 
-#    res_acf = run_autoregression_on_df(time_series)      
-#    print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
-#    res_stationarity = run_test_stationarity_adf(time_series)                                    
-#    print "Calling to ARIMA model fit"
-#    res_arima = run_arima_fit(time_series, order=None)
-#    #print "Calling to run_forecasting to study predictability of the time series for the ARIMA"
-#    #res_forecasting = run_forecasting(res_arima)
-#    #return masker, time_series, res_lagged, res_acf, res_stationarity, res_arima 
-#    print "Displaying the connectome"
-#    kind_of_correlation = 'correlation'
-#    corr_matrix = plot_ts_connectome(time_series, kind_of_correlation)
-#    print corr_matrix
-    #Granger causality of the time series
-    grangerresult = test_of_grangercausality(time_series)
-    # Calculate the G causality among pairs of time series  
-    [corrm_xy, corrm_yx, listoffreqs]  = compute_granger_pair_of_ts(time_series)
-    for ff in range(0, len(listoffreqs)):
-        print "XY Granger at freq:", listoffreqs[ff], " =", corrm_xy[:,:,listoffreqs[ff]]
-        print "YX Granger at freq:", listoffreqs[ff], " =", corrm_yx[:,:,listoffreqs[ff]]
-        # average on last dimension (frequency and plot)
-        #fig03 = drawmatrix_channels(g1, roi_names, size=[10., 10.], color_anchor=0)
-    return 
-    fourier_analysis = False
+    if time_series.shape[0] != epi_params:
+        warnings.warn("The time series number of points is !=116 check your bold_data.nii !!", Warning)
+    print "Masker is:", masker, " \n \t and time series shape", time_series.shape
+    ts_nonlin_characterization = False
+    if ts_nonlin_characterization is True:
+        print "Testing for collinearity in the time series"
+        res_lagged = run_collinearity_on_df(time_series)
+        print "Calling to run_autoregression_on_ts(y) to test for autocorrelation in the time series" 
+        res_acf = run_autoregression_on_df(time_series)      
+        print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
+        res_stationarity = run_test_stationarity_adf(time_series)                                    
+        print "Calling to ARIMA model fit"
+        res_arima = run_arima_fit(time_series, order=None)
+       #print "Calling to run_forecasting to study predictability of the time series for the ARIMA"
+       #res_forecasting = run_forecasting(res_arima)
+       #return masker, time_series, res_lagged, res_acf, res_stationarity, res_arima 
+    display_connectome = False
+    if display_connectome is True:
+        kind_of_correlation = 'correlation'
+        print "Displaying the connectome for corr_type:", kind_of_correlation
+        msgtitle = kind_of_correlation + ' DMN (Cad)'
+        # Plotting time series and network in brain overlayed using  nilearn.connectome.ConnectivityMeasure
+        corr_matrix = plot_ts_connectome(time_series, kind_of_correlation)
+        #plotting kind_of_correlation as a heatmap from nitime
+        fig_C_drawx = drawmatrix_channels(corr_matrix, dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)            
+        #plotting kind_of_correlation as a network with nodes of variable size and label in it from nitime
+        fig_C_drawg = drawgraph_channels(corr_matrix, dim_coords.keys(),title=msgtitle)
+
+    testforGranger = False
+    if testforGranger is True:
+        #Granger causality test of the time series
+        grangerresult = test_of_grangercausality(time_series)
+        # Calculate the G causality among pairs of time series  
+        G = compute_granger_pair_of_ts(time_series)
+        freq_idx_G = np.where((G.frequencies > 0) * (G.frequencies <= 0.2))[0]
+        listoffreqs = G.frequencies[:]
+        #for ff in range(0, len(listoffreqs)):
+            #print "Freq:", ff, " / ", listoffreqs, " idx ", freq_idx_G
+            #print "XY Granger at freq:", listoffreqs[ff], " =", G.causality_xy[:,:,freq_idx_G[ff]]
+            #print "YX Granger at freq:", listoffreqs[ff], " =", G.causality_yx[:,:,freq_idx_G[ff]]
+            # average on last dimension (frequency and plot)
+        msgtitle = 'Granger "causality" DMN (Cad)'
+        #plotting GC as a heatmap from nitime
+        fig_G_drawx = drawmatrix_channels(np.mean(G.causality_xy[:, :, freq_idx_G], -1), dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)            
+        #plotting GC as a network with nodes of variable size and label in it from nitime
+        fig_G_drawg = drawgraph_channels(np.nan_to_num(np.mean(G.causality_xy[:, :, freq_idx_G], -1)), dim_coords.keys(),title=msgtitle)
+         
+    fourier_analysis = True
     if fourier_analysis is True:
         print "Calculating the PSD of the time series"
         psd_original = fourier_spectral_estimation(time_series)
-        
-    surrogate_analysis = True
+        #compute coherence
+        corr_type = 'Mean Coherence across frequencies (Cad)'
+        [coherence_mat, seeds, targets] = compute_coherence_pairs_of_ts(time_series)
+        print "Plotting functional connectivity of the Frequency spectrum"
+        plot_coupling_heatmap(coherence_mat, seeds, targets, dim_coords.keys(), corr_type=corr_type)
+        msgtitle = 'Coherency DMN (Cad)'
+        #SeedCoherency
+        compute_seed_coherence(time_series)
+                       
+    surrogate_analysis = False
     if surrogate_analysis is True:
         num_realizations = 10
         nullmodel = 'gaussian noise'
@@ -137,7 +210,73 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         print "\n\n The nonlinear statistics for the Surrogate time series is :", nonlstats_surrogate, 
         "\n to access the resulst: nonlstats_surrogate[0][9]['lyap'|'corr_dim'|sampen] \n"
         ts_and_ps = ttest_orig_vs_surrogate(nonlstats_orig, nonlstats_surrogate, realizations=num_realizations)
+    
+    seed_based_connectome = False
+    if seed_based_connectome is True:
+        if masker is None:
+            label = 'DMN'
+            dim_coords = get_MNI_coordinates(label)
+            masker = load_masker(dim_coords) 
+        seed_masker = masker
+        if time_series is None:
+            time_series = seed_masker.fit_transform(epi_file)
+        seed_time_series = time_series    
+        brain_masker = load_masker('brain-wide')
+        brain_time_series = brain_masker.fit_transform(epi_file)
+        print("seed time series shape: (%s, %s)" % seed_time_series.shape)
+        print("brain time series shape: (%s, %s)" % brain_time_series.shape)
+        #select the seed
+        seed_time_series = seed_time_series[:,0]
+        seed_based_correlations = np.dot(brain_time_series.T, seed_time_series) / \
+                          seed_time_series.shape[0]
+        #pdb.set_trace()
+        print "seed-based correlation shape", seed_based_correlations.shape
+        print "seed-based correlation: min =", seed_based_correlations.min(), " max = ", seed_based_correlations.max()
+        #Fisher-z transform the data to achieve a normal distribution. 
+        #The transformed array can now have values more extreme than +/- 1.
+        seed_based_correlations_fisher_z = np.arctanh(seed_based_correlations)
+        print "seed-based correlation Fisher-z transformed: min =", seed_based_correlations_fisher_z.min(), \
+        " max =", seed_based_correlations_fisher_z.max()                                                                                             
+        seed_based_correlation_img = brain_masker.inverse_transform(seed_based_correlations.T)
+        seed_based_correlation_img.to_filename('sbc_z.nii.gz')
+        pcc_coords = dim_coords.values()[0]
+        #pcc_coords = [(0, -52, 18)]
+        MNI152Template = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_symmetric.nii.gz'
+        #remove out-of brain functional connectivity using a mask
+        icbms = datasets.fetch_icbm152_2009()
+        masker_mni = NiftiMasker(mask_img=icbms.mask)
+        data = masker_mni.fit_transform('sbc_z.nii.gz')
+        masked_sbc_z_img = masker_mni.inverse_transform(data)
+        display = plotting.plot_stat_map(masked_sbc_z_img , cut_coords=pcc_coords, threshold=0.6, title= 'PCC-based corr. V-A', dim='auto', display_mode='ortho')
+        #Coherency
 
+        #pdb.set_trace()
+        #display.add_markers(marker_coords=pcc_coords, marker_color='g', marker_size=300)
+        # At last, we save the plot as pdf.
+        #display.savefig('sbc_z.pdf')
+        #correlate the seed signal with the signal of each voxel. \
+        #The dot product of the two arrays will give us this correlation. 
+        #Note that the signals have been variance-standardized during extraction. 
+        #To have them standardized to norm unit, we further have to divide the 
+        #result by the length of the time series.
+        
+def  load_fmri_image_name(image_file=None):
+    """ load a bold data file 
+    
+    image_file: path of the bold_data.nii
+    return the path of the image and the parameters (TR, n,fs, nfft, duration_in_s)
+    """
+    # Load fmri image (4D object)
+    image_params = {'TR':2.5, 'n':120-4, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
+    image_params = {'TR':2.5, 'n':120, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
+    if image_file is None:
+        dir_name = '/Users/jaime/vallecas/mario_fa/RF_off'
+        dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0537_1'
+        f_name = 'bold_data_mcf2standard.nii'
+        f_name = 'wbold_data.nii'
+        image_file = os.path.join(dir_name, f_name)
+    return image_file, image_params
 
 def plot_ts_network(ts, lab):
     # plot_ts_network  Plot time series for a network 
@@ -145,7 +284,6 @@ def plot_ts_network(ts, lab):
     # lab: list of labels
     plt.figure()
     for ts_ix, label in zip(ts.T, lab):
-        #pdb.set_trace()
         plt.plot(np.arange(0,len(ts_ix)), ts_ix, label=label)
         
     plt.title('Default Mode Network Time Series')
@@ -155,39 +293,28 @@ def plot_ts_network(ts, lab):
     plt.tight_layout()
     
 def plot_ts_connectome(ts, kind_of_corr=None, labelnet=None):
-     from sklearn.covariance import LedoitWolf, EmpiricalCovariance
-     if kind_of_corr is None:
-         kind_of_corr='correlation'
-     if labelnet is None:
-         labelnet='DMN'  
-     #connectivity_measure = ConnectivityMeasure(kind=kind_of_corr) 
-     #connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=False, block_size=1000, store_precision=False), kind=kind_of_corr) 
-     connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=True), kind=kind_of_corr) 
-     correlation_matrix = connectivity_measure.fit_transform([ts])[0] 
-     #print  correlation_matrix
-     coords_dict = get_MNI_coordinates(labelnet)  
-     plotting.plot_connectome(correlation_matrix, coords_dict.values(),edge_threshold='05%',
+    """plot correlation netween time series using nilearn.plotting.plot_connectome
+    
+    ts: time series at least 2
+    kind_of_corr:  {“correlation”, “partial correlation”, “tangent”, “covariance”, “precision”}, optional
+    labelnet: label on top ledt of the overlayed brain figure. If none DMN   
+    
+    """
+    from sklearn.covariance import LedoitWolf, EmpiricalCovariance
+    if kind_of_corr is None:
+        kind_of_corr='correlation'
+    if labelnet is None:
+        labelnet='DMN'  
+        #connectivity_measure = ConnectivityMeasure(kind=kind_of_corr) 
+        #connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=False, block_size=1000, store_precision=False), kind=kind_of_corr) 
+        connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=True), kind=kind_of_corr) 
+        correlation_matrix = connectivity_measure.fit_transform([ts])[0] 
+        #print  correlation_matrix
+        coords_dict = get_MNI_coordinates(labelnet)  
+        plotting.plot_connectome(correlation_matrix, coords_dict.values(),edge_threshold='05%',
                          title=labelnet,display_mode="ortho",edge_vmax=.5, edge_vmin=-.5)
-     return correlation_matrix    
-         
-    
-def  load_fmri_image_name(image_file=None):
-    # Load fmri image (4D object)
-    image_params = {'TR':2.5, 'n':120-4, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
-    image_params = {'TR':2.5, 'n':120, 'fs': 0.4, 'nfft':129,'duration_in_s':120*2.5}
-    if image_file is None:
-        dir_name = '/Users/jaime/vallecas/mario_fa/RF_off'
-        dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
-        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0517'
-        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0537_0/'
-        #dir_name = '/Users/jaime/vallecas/data/cadavers/dicom/fromOsiriX_bcpa0650_DEAD_2016_ID7741/niftis'
-        f_name = 'bold_data_mcf2standard.nii.gz'
-        f_name = 'bold_data.nii'
-        #f_name = '20170126_172022rsfMRIFA7s007a1001.nii.gz'
-        #f_name = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
-        image_file = os.path.join(dir_name, f_name)
-    return image_file, image_params
-    
+        return correlation_matrix    
+           
 def load_masker(dim_coords=None):   
     """Returns the Masker object from an Atlas (mask_file) or a list of voxels
     
@@ -195,6 +322,7 @@ def load_masker(dim_coords=None):
     dim_coords: dictionary of a network of interest eg DMN.
     dim_coords: list of coordinates of voxels.    
     dim_coords: atlas_harvard_oxford, eg 'cort-maxprob-thr25-2mm'  
+    dim_coords: 'brain-wide'
 
     Example: load_masker() #returns masker for the entire brain
     load_masker(get_MNI_coordinates('MNI'))  #returns masker for the the MNI coordinates
@@ -205,10 +333,11 @@ def load_masker(dim_coords=None):
     standarize = True # standardize If standardize is True, the time-series are centered and normed: their mean is set to 0 and their variance to 1 in the time dimension.
     radius = 8 #in mm. Default is None (signal is extracted on a single voxel
     smoothing_fwhm = None # If smoothing_fwhm is not None, it gives the full-width half maximum in millimeters of the spatial smoothing to apply to the signal.
+
     if dim_coords is None or len(dim_coords) == 0:    
         print "No mask used, process the entire brain"
         return None
-    elif type(dim_coords) is dict:  
+    elif type(dim_coords) is dict or type(dim_coords) is OrderedDict:  
         # Extract the coordinates from the dictionary
         print " The mask is the list of voxels:", dim_coords.keys(), "in MNI space:", dim_coords.values()
         masker = input_data.NiftiSpheresMasker(dim_coords.values(), radius=radius,
@@ -225,6 +354,11 @@ def load_masker(dim_coords=None):
                                                low_pass=0.2, high_pass=0.001, 
                                                t_r=2.5,memory='nilearn_cache', 
                                                memory_level=1, verbose=2) 
+    elif dim_coords == 'brain-wide':
+        # Extract the maksker of the entire brain
+        masker = input_data.NiftiMasker(smoothing_fwhm=6, detrend=True, standardize=standarize,
+                                              low_pass=0.2, high_pass=0.001, t_r=2.5,
+                                              memory='nilearn_cache', memory_level=1, verbose=2)
     else:
         # The mask is an Atlas
         dataset = datasets.fetch_atlas_harvard_oxford(dim_coords)
@@ -272,12 +406,125 @@ def createDataFrame_from_image(image_file=None, masker=None):
         time_series = masker.fit_transform(image_file)   
     return time_series
 
+def compute_seed_coherence(time_series, image_file=None, image_params=None):
+    """compute seed based coherency analysis for one seed and the brain
+    
+    time_series: time series of theseeds
+    """
+    import nitime.fmri.io as io
+    f_lb = 0
+    f_ub = 0.2
+    if image_file is None: [image_file,image_params] = load_fmri_image_name()
+    #ts of the only one seed passed as an argument
+    #ts_seed = np.transpose(time_series)
+    mni_coordinates = get_MNI_coordinates('DMN')
+    seeds = mni_coordinates.values()
+    coords_seeds = np.array(seeds[0]).T
+    volume_shape= nib.load(image_file).get_data().shape[:-1]
+    coords = list(np.ndindex(volume_shape))
+    coords_target = np.array(coords).T
+    time_series_seed = io.time_series_from_file(image_file,
+                                coords_seeds,
+                                TR=image_params['TR'],
+                                normalize='percent',
+                                filter=dict(lb=f_lb,
+                                            ub=f_ub,
+                                            method='boxcar'))
+    time_series_target = io.time_series_from_file(image_file,
+                                          coords_target,
+                                          TR=image_params['TR'],
+                                          normalize='percent',
+                                          filter=dict(lb=f_lb,
+                                                      ub=f_ub,
+                                                    method='boxcar'))
+    #remove nan
+    [nn, pp] = time_series_target.shape
+    for i in range(0,nn):
+        time_series_target.data[i] = nitime.utils.thresholded_arr(time_series_target.data[i], fill_val=0.)
+    print "Calculating     SeedCoherenceAnalyzer"
+    pdb.set_trace()
+    A = SeedCoherenceAnalyzer(time_series_seed, time_series_target)
+    freq_idx = np.where((A.frequencies > f_lb) * (A.frequencies < f_ub))[0]
+    coh = []
+    coh.append(np.mean(A.coherence[0][:, freq_idx], -1))
+    coords_indices = list(coords_target)
+    vol_coh = []
+    vol_coh.append(np.empty(volume_shape))
+    vol_coh[-1][coords_indices] = coh[0]
+    
+    
+def compute_coherence_pairs_of_ts(time_series, image_params=None):
+    """spectral analysis of the signal for the coherence. It uses CoherenceAnalyzer 
+    and or SeedCoherenceAnalyzer, (nitime.analysis) are equivalent.    
+    """
+    f_lb = 0
+    f_ub = 0.2
+    if image_params is None: image_params = load_fmri_image_name()[1]
+    combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
+    time_series = np.transpose(time_series)
+    #time_series = nitime.timeseries.TimeSeries(time_series, sampling_interval=image_params['TR'])
+    seeds = []
+    targets = []
+    for c in combinations:
+        seeds.extend([c[0]])
+        targets.extend([c[1]])
+    #remove repes
+    seeds = list(set(seeds))
+    targets = list(set(targets))
+    ts_seed = time_series[seeds]
+    ts_target = time_series[targets]
+    T = ts.TimeSeries(np.vstack([ts_seed, ts_target]), sampling_interval=image_params['TR'])
+    C1 = CoherenceAnalyzer(T)
+    print "Coherence seed:",seeds, " target:", targets, " = ", C1.coherence[0, 1], "\n Delay:", C1.delay[0, 1], "\n phases:", C1.phase[0, 1]
+    #C2 = CoherenceAnalyzer(T)
+    #print "Seed Coherence:", C2.coherence[1], " Delay:", C2.delay[1], " rphases:", C2.relative_phases[1]
+    freq_idx_C1 = np.where((C1.frequencies > f_lb) * (C1.frequencies < f_ub))[0]
+    rows, cols, freqs = C1.coherence[:, :, freq_idx_C1].shape # coh.shape
+    rows2 = len(seeds)
+    cols2 = len(targets)
+    #obtain minimum matrix(Seeds x Targets), elimating redundant pairs 
+    #coh_seedsxtargets = coh[:rows2,cols2:]
+    coh_seedsxtargets =  C1.coherence[:rows2, cols2:, freq_idx_C1]     
+    print "Calculating Coherence for Seeds:", seeds, " x targets:", targets, " for frequencies : ", C1.frequencies
+    print " Coherence SeedxTarget for each frequency: [[seed-target]freq]", C1.coherence[:rows2, cols2:, freq_idx_C1]
+    meanoverf = np.mean(C1.coherence[:rows2, cols2:, freq_idx_C1], -1)
+    print "\n The Mean coherence over frequencies is:\n", meanoverf
+    #fig01 = drawmatrix_channels(meanoverf, ['a','b','c','d'], size=[10., 10.], color_anchor=0)
+    return meanoverf,seeds,targets
 
-def compute_granger_pair_of_ts(time_series):
-    """Calculate the Granger causality for pairs of tiem series
+def plot_coupling_heatmap(corrmat, seeds, targets, labels, corr_type=None):
+    """plot heatmap from a corrrelation matrix 
+    
+    corrmat: Coherenceanalyzer object
+    seeds: list of elements in the origin
+    targets: list of elemensts in the target
+    labels: name of the ROI whose correlation arre being displayed
+    example: plot_correlation_heatmap(corrat, [0,1,2], [1,2,3], dim_coords.keys(), 'coherence')  
+    """
+    print "Calling to  pyplot version:",  __version__ # requires version >= 1.9.0 
+    seed_labels = itemgetter(*seeds)(labels) 
+    #target_labels = list(reversed(itemgetter(*targets)(labels)))
+    target_labels = itemgetter(*targets)(labels)
+    trace = go.Heatmap(z=corrmat,x=target_labels , y=seed_labels)
+    data=[trace]
+    #https://plot.ly/python/axes/
+    layout = go.Layout(
+                title=corr_type,
+                width = 500, height = 500,
+                yaxis=dict(tickfont=dict(size=12), tickangle=-45),
+                xaxis=dict(tickfont=dict(size=12)), 
+                autosize = False,
+                margin=go.Margin(l=100,r=50,b=100,t=100,pad=4)
+    )
+    fig = go.Figure(data=data, layout=layout)
+    py.plot(fig)
+    
+
+def compute_granger_pair_of_ts(time_series, image_params=None):
+    """Calculate the Granger causality for pairs of tiem series using nitime.analysis.coherence
     """
     
-    image_params = load_fmri_image_name()[1]
+    if image_params is None: image_params = load_fmri_image_name()[1]
     #frequencies = np.linspace(0,0.2,129)
     combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
     time_series = np.transpose(time_series)
@@ -287,7 +534,7 @@ def compute_granger_pair_of_ts(time_series):
     listoffreqs = granger_sys.frequencies[:]
     corr_mats_xy = granger_sys.causality_xy[:,:,:]
     corr_mats_yx = granger_sys.causality_yx[:,:,:]
-    return [corr_mats_xy, corr_mats_yx, listoffreqs]
+    return granger_sys #[corr_mats_xy, corr_mats_yx, listoffreqs]
 
 def test_of_grangercausality(time_series):
     """Test for Granger Cauality in the original time series. The Null hypothesis for grangercausalitytests is that the time series \
@@ -483,7 +730,6 @@ def run_arima_fit(y, order=None):
             print "Fitting ARIMA, ROI:", ind, "/", y.shape[1]-1   
             #res_trend  = run_arima_fit_ts(pd.Series(y[:,ind]),order) 
             #You need datetime index when you use pandas, but you can use a numpy ndarray for the series which does not need any index.
-            #pdb.set_trace()
             try:
                 res_trend = []
                 res_trend  = run_arima_fit_ts(y[:,ind], ind, order)
@@ -667,7 +913,6 @@ def correlation_of_ts_vs_surrogate(original_ts, dataframe):
             #pairwise correlation(default is pearson) betwee oroginal ts and one of the relizations
             #method='pearson|kendall|spearman', min_periods=None
             corr = ts_orig.corr(ts_tocompare, method='spearman')
-            #pdb.set_trace()
             print "correlation for i:", i, " jindex:", jindex, " =",corr
             x.append(corr)
         y.append(x)
@@ -960,19 +1205,14 @@ def get_MNI_coordinates(label):
         # DMN coordinates from HEDDEN ET AL (2009) PCC
         # DMN = PCC (-5, -53, 41) is BA31 http://www.sciencedirect.com/science/article/pii/S187892931400053X
         # ,MPFC (0, 52, -6)  LLPC (-48, -62, 36) RLPC (46, -62, 32)
-        label = [
-                'Posterior Cingulate Cortex',
-                'Left Temporoparietal junction',
-                'Right Temporoparietal junction',
-                'Medial prefrontal cortex'
-                ] 
+        label = ['Post. Cing. Cortex','Left Tmp.Ptl. junction','Right Tmp.Ptl. junction','Medial PFC '] 
         # Dictionary of network with MNI components. 
         # http://nilearn.github.io/auto_examples/03_connectivity/plot_adhd_spheres.html#sphx-glr-auto-examples-03-connectivity-plot-adhd-spheres-py
         # dmn_coords = [(0, -52, 18), (-46, -68, 32), (46, -68, 32), (1, 50, -5)] 
-        dim_coords = {label[0]:(0, -52, 18),label[1]:(-46, -68, 32), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from nilearn page
-        #dim_coords = {label[0]:(0, -52, 18),label[1]:(0, -52, 20), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from HEDDEN ET AL (2009) PCC
-        
-        #dim_coords = [(-5, -53, 41), (0, 52, -6), (-48, -62, 36), (46, -62, 32)]
+        #dim_coords = {label[0]:(0, -52, 18),label[1]:(-46, -68, 32), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from nilearn page
+        dim_coords = OrderedDict([(label[0],(0, -52, 18)),(label[1],(-46, -68, 32)), (label[2],(46, -68, 32)),(label[3],(1, 50, -5))])
+        #make sure dictionary respects the order of the keys
+        #pdb.set_trace()
     elif label is 'SN':
         # Salience network
         dim_coords = []    
