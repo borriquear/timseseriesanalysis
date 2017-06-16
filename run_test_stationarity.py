@@ -52,7 +52,54 @@ from nitime.viz import drawmatrix_channels, drawgraph_channels
 from mpl_toolkits.mplot3d import Axes3D
 import warnings
 
+#Global variables
+#standarize transform time series in unit variance
+# if True the time-series are centered and normed: 
+# their mean is set to 0 and their variance to 1 in the time dimension.
+#low_pass, high_pass, detrend, smoothing_fwhm,t_r,verbose
+standarize = True
+detrend = True
+#smoothing_fwhm = None  If smoothing_fwhm is not None, it gives the full-width 
+#half maximum in millimeters of the spatial smoothing to apply to the signal.
+smoothing_fwhm = 0
+t_r = 2.5
+low_pass = 0.2
+high_pass = 0.001
+verbose = 2
 
+def test_group_analysis(epi_file_list=None):
+    """group analysis of bold data. Calculates the components of a list of bold images
+    """
+    from nilearn.decomposition import CanICA
+    from nilearn.plotting import plot_prob_atlas
+    from nilearn.image import iter_img
+    from nilearn.plotting import plot_stat_map, show
+
+    if epi_file_list is None:
+        epi_file_list = []
+        subjects_list = ['bcpa0537_0','bcpa0517', 'bcpa0530', 'bcpa0540','bcpa0543', 'bcpa0545','bcpa0576','bcpa0577','bcpa0578_0','bcpa0581','bcpa0650_0']
+        subjects_list = ['bcpa0537_1','bcpa0578_1', 'bcpa0650_1']
+        #dir_name = '/Users/jaime/vallecas/data/surrogate/'
+        f_name = 'wbold_data.nii'
+        for i in range(0,len(subjects_list)):
+            subjname = os.path.join(dir_name,subjects_list[i])
+            epi_file_list.append(os.path.join(subjname, f_name))            
+    canica = CanICA(n_components=20, smoothing_fwhm=smoothing_fwhm, #6.
+                memory="nilearn_cache", memory_level=2,
+                threshold=3., verbose=10, random_state=0)    
+    canica.fit(epi_file_list)
+    # Retrieve the independent components in brain space
+    components_img = canica.masker_.inverse_transform(canica.components_)
+    # save components as a nifti image 
+    components_img.to_filename('canica_resting_state.nii.gz')   
+    # Plot all ICA components together
+    plot_prob_atlas(components_img, title='All ICA components 3/3 Alive',cut_coords=(0,-52,18))
+    # plot the map for each ICA component separately
+    for i, cur_img in enumerate(iter_img(components_img)):
+        plot_stat_map(cur_img, display_mode="z", title="IC %d" % i, cut_coords=1, colorbar=False)
+    show()
+    
+    
 def test_clustering_in_rs(epi_file=None):
     """Hierarchical clustering (Ward) in rs data
     """
@@ -81,7 +128,7 @@ def test_clustering_in_rs(epi_file=None):
     
     start = time.time()  
     #FeatureAgglomeration clustering algorithm from scikit-learn 
-    n_clusters=100
+    n_clusters= 40
     ward = FeatureAgglomeration(n_clusters, connectivity=connectivity,
                             linkage='ward', memory='nilearn_cache')
     ward.fit(fmri_masked)
@@ -90,64 +137,111 @@ def test_clustering_in_rs(epi_file=None):
     labels = ward.labels_ + 1
     labels_img = nifti_masker.inverse_transform(labels)
     mean_func_img = mean_img(epi_file)
-    first_plot = plot_roi(labels_img, mean_func_img, title="Ward parcellation V-Alive",
+    msgtitle ="Ward parcellation nclusters=%s, %s" % (n_clusters, os.path.split(os.path.dirname(epi_file))[1])
+    first_plot = plot_roi(labels_img, mean_func_img, title=msgtitle,
                       display_mode='ortho', cut_coords=(0,-52,18))
     cut_coords = first_plot.cut_coords
     print cut_coords
     labels_img.to_filename('parcellation.nii')
 
     
-def test_connectome_timeseries(epi_file=None, dim_coords=None):
+def test_connectome_timeseries(epi_file=None, type_of_mask=None):
     """ connectome time series characterization
     Run tests for collinearity, run_autoregression_on_df, stationarity and calculates the connectome of the given coords
     Example: test_connectome_timeseries() 
-    test_connectome_timeseries(None, [(20,20,20),(30,12,7)])
-    test_connectome_timeseries(None, 'cort-maxprob-thr25-2mm')
-    test_connectome_timeseries(None, get_MNI_coordinates('DMN'))    
+    test_connectome_timeseries(None, type_of_mask='spheres') 
+    test_connectome_timeseries(None, type_of_mask='atlas')
+    test_connectome_timeseries(None, type_of_mask='brain-wide') 
     """
     if epi_file is None:
         [epi_file, epi_params]= load_fmri_image_name()
         print " EPI file:", epi_file, " EPI params:", epi_params    
-    if dim_coords is None:
-        # Coordinates mask: masker = load_masker(dim_coords=[(x,y,z), (x,y,z)])
-        # Harvard atlas mask: masker = load_masker(dim_coords='cort-maxprob-thr25-2mm')
-        label = 'DMN'
-        dim_coords = get_MNI_coordinates(label)
-        masker = load_masker(dim_coords)
-    else:
-        masker = load_masker(dim_coords)
+    if type_of_mask is None:
+        #if not mask specified used harvard cortical atlas
+        type_of_mask = ['brain-wide', 'atlas', 'spheres' ]
+        type_of_mask = type_of_mask[2]
+    subject_id = os.path.split(os.path.dirname(epi_file))[1]
+    label_coords = None
+    epi_data = None
+    dim_coords = None
+    if type_of_mask == 'spheres':
+        rs_network_name = 'DMN'
+        dim_coords = get_MNI_coordinates(rs_network_name)  
+        label_coords = dim_coords.keys()
+    elif type_of_mask == 'atlas':
+        rs_network_name = type_of_mask
+        print("Using an Atlas as mask")
+    elif type_of_mask == 'brain-wide':
+        epi_data = epi_file       
+    #generate the mask, only if brain wide we need epi_data, if spheres dim_coords
+    masker = generate_mask(type_of_mask, epi_data, dim_coords)
+    print("Masker parameters for subject:%s are:%s\n") % (subject_id, masker.get_params())
+    print("Extracting the time series for subject:%s and the Mask") % subject_id 
     time_series = masker.fit_transform(epi_file)
-    timepoints,  nb_oftseries = time_series.shape
-    print "Plotting time series", timepoints,  nb_oftseries
-    plot_ts_network(time_series, dim_coords.keys())
-    if time_series.shape[0] != epi_params:
-        warnings.warn("The time series number of points is !=116 check your bold_data.nii !!", Warning)
-    print "Masker is:", masker, " \n \t and time series shape", time_series.shape
+    if time_series.shape[0] == epi_params['n']:
+        warnings.warn("The time series number of points is 120, removing 4 initial dummy volumes", Warning)
+        time_series = time_series[4:time_series.shape[0],:]
+    print "Plotting time series for type_of_mask:", type_of_mask, " (txv)=", time_series.shape[0],  time_series.shape[1]    
+    #plot time series only if the mask is not the entire brain
+    if type_of_mask != 'brain-wide':
+        plot_ts_network(time_series, label_coords,subject_id,rs_network_name)  
+    
+    non_lin_stats = True
+    if non_lin_stats is True:    
+        nonlinearresults = compute_nonlinear_statistics(time_series)
+        print "Subject:", subject_id, ", Mean of nonlinear measures: corr_dim=", np.mean(nonlinearresults['corr_dim']),\
+        " Sample Entropy", np.mean(nonlinearresults['sampen'])," Lyapunov exponent=", np.mean(nonlinearresults['lyap']),\
+        " Hurst exponent", np.mean(nonlinearresults['hurst'])                                                                            
+        #Save non linear measures in file"
+        save_dict_in_file(nonlinearresults,type_of_mask)
     ts_nonlin_characterization = False
     if ts_nonlin_characterization is True:
         print "Testing for collinearity in the time series"
-        res_lagged = run_collinearity_on_df(time_series)
+        res_lagged = run_collinearity_on_df(time_series, subject_id)
         print "Calling to run_autoregression_on_ts(y) to test for autocorrelation in the time series" 
-        res_acf = run_autoregression_on_df(time_series)      
+        res_acf = run_autoregression_on_df(time_series, subject_id)      
         print "Calling to run_test_stationarity_adf(y) to test for stationarity using augmented Dickey Fuller test" 
-        res_stationarity = run_test_stationarity_adf(time_series)                                    
+        res_stationarity = run_test_stationarity_adf(time_series, subject_id)                                
         print "Calling to ARIMA model fit"
-        res_arima = run_arima_fit(time_series, order=None)
+        order = None
+        res_arima = run_arima_fit(time_series, order, subject_id)
        #print "Calling to run_forecasting to study predictability of the time series for the ARIMA"
        #res_forecasting = run_forecasting(res_arima)
        #return masker, time_series, res_lagged, res_acf, res_stationarity, res_arima 
-    display_connectome = False
+    display_connectome = True
     if display_connectome is True:
         kind_of_correlation = 'correlation'
         print "Displaying the connectome for corr_type:", kind_of_correlation
-        msgtitle = kind_of_correlation + ' DMN (Cad)'
+        if type_of_mask == 'atlas':
+            label='cort-maxprob-thr25-2mm'
+            label_map = get_atlas_labels(label)
+        elif type_of_mask == 'spheres':
+            label = rs_network_name
+            label_map = dim_coords.keys()
+        else:
+            label = 'brain-wide'
+        msgtitle =" Correlation:%s for %s, Type of Mask:%s" % ( kind_of_correlation, os.path.split(os.path.dirname(epi_file))[1], label)
         # Plotting time series and network in brain overlayed using  nilearn.connectome.ConnectivityMeasure
-        corr_matrix = plot_ts_connectome(time_series, kind_of_correlation)
-        #plotting kind_of_correlation as a heatmap from nitime
-        fig_C_drawx = drawmatrix_channels(corr_matrix, dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)            
-        #plotting kind_of_correlation as a network with nodes of variable size and label in it from nitime
-        fig_C_drawg = drawgraph_channels(corr_matrix, dim_coords.keys(),title=msgtitle)
-
+        corr_matrix = plot_ts_connectome(time_series, kind_of_correlation,label, subject_id)
+        if type_of_mask == 'atlas':  
+            #plotting kind_of_correlation as a heatmap from nitime
+            fig_C_drawx = drawmatrix_channels(corr_matrix, label_map, size=[10., 10.], color_anchor=0, title= msgtitle)  
+        elif type_of_mask == 'spheres': 
+            #plotting kind_of_correlation as a network with nodes of variable size and label in it from nitime
+            fig_C_drawg = drawgraph_channels(corr_matrix,label_map,title=msgtitle) 
+    dynamictimewarping = False
+    if dynamictimewarping is True:
+        print "Computing the Dynamic time warping for ts similarity"
+        onetoallcomparison =False
+        if onetoallcomparison == True:
+            ts1 = pd.Series(time_series[:,0])
+            ts2 = pd.DataFrame(time_series[:,1:time_series.shape[1]])
+        else:
+            #do all to all rois calculus
+            ts1 = pd.DataFrame(time_series)
+            ts2 = ts1
+        ts_similarity(ts1,ts2, subject_id)
+  
     testforGranger = False
     if testforGranger is True:
         #Granger causality test of the time series
@@ -166,20 +260,36 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         fig_G_drawx = drawmatrix_channels(np.mean(G.causality_xy[:, :, freq_idx_G], -1), dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)            
         #plotting GC as a network with nodes of variable size and label in it from nitime
         fig_G_drawg = drawgraph_channels(np.nan_to_num(np.mean(G.causality_xy[:, :, freq_idx_G], -1)), dim_coords.keys(),title=msgtitle)
-         
+    return     
     fourier_analysis = True
     if fourier_analysis is True:
         print "Calculating the PSD of the time series"
         psd_original = fourier_spectral_estimation(time_series)
         #compute coherence
         corr_type = 'Mean Coherence across frequencies (Cad)'
-        [coherence_mat, seeds, targets] = compute_coherence_pairs_of_ts(time_series)
-        print "Plotting functional connectivity of the Frequency spectrum"
-        plot_coupling_heatmap(coherence_mat, seeds, targets, dim_coords.keys(), corr_type=corr_type)
-        msgtitle = 'Coherency DMN (Cad)'
+        msgtitle ="Mean Coherence across frequencies %s" % (os.path.split(os.path.dirname(epi_file))[1])
+        #T = ts.TimeSeries(np.vstack([ts_seed, ts_target]), sampling_interval=image_params['TR'])
+        T = ts.TimeSeries(np.transpose(time_series), sampling_interval=epi_params['TR'])
+        method=dict(this_method='welch', n_overlap= 20)
+        Coh_az= CoherenceAnalyzer(T, method)
+        print "Coherence Analyzer method used:", Coh_az
+        #pdb.set_trace()
+        freq_idx = np.where((Coh_az.frequencies > high_pass) * (Coh_az.frequencies < low_pass))[0]
+        coh = np.mean(Coh_az.coherence[:, :, freq_idx], -1)  # Averaging on the last dimension
+        #pdb.set_trace()
+        fig03 = drawmatrix_channels(coh, label_coords, size=[10., 10.], color_anchor=0)
+        fig04 = drawgraph_channels(coh, label_coords, title=msgtitle) 
+                     
+#        [coherence_mat, seeds, targets] = compute_coherence_pairs_of_ts(time_series)
+#        print "Plotting functional connectivity of the Frequency spectrum"
+#        fig_F_drawx = drawmatrix_channels(coherence_mat, dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)  
+#        fig_F_drawg = drawgraph_channels(coherence_mat, dim_coords.keys(),title=msgtitle) 
+        #plot using ploty
+        #plot_coupling_heatmap(coherence_mat, seeds, targets, dim_coords.keys(), corr_type=msgtitle)
+        #msgtitle = 'Coherency DMN (Cad)'
         #SeedCoherency
-        compute_seed_coherence(time_series)
-                       
+        #compute_seed_coherence(time_series)
+    return                   
     surrogate_analysis = False
     if surrogate_analysis is True:
         num_realizations = 10
@@ -211,17 +321,14 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         "\n to access the resulst: nonlstats_surrogate[0][9]['lyap'|'corr_dim'|sampen] \n"
         ts_and_ps = ttest_orig_vs_surrogate(nonlstats_orig, nonlstats_surrogate, realizations=num_realizations)
     
-    seed_based_connectome = False
+    seed_based_connectome = True
     if seed_based_connectome is True:
-        if masker is None:
-            label = 'DMN'
-            dim_coords = get_MNI_coordinates(label)
-            masker = load_masker(dim_coords) 
         seed_masker = masker
+        pdb.set_trace()
         if time_series is None:
             time_series = seed_masker.fit_transform(epi_file)
         seed_time_series = time_series    
-        brain_masker = load_masker('brain-wide')
+        brain_masker = generate_mask('brain-wide', epi_file)
         brain_time_series = brain_masker.fit_transform(epi_file)
         print("seed time series shape: (%s, %s)" % seed_time_series.shape)
         print("brain time series shape: (%s, %s)" % brain_time_series.shape)
@@ -229,7 +336,6 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         seed_time_series = seed_time_series[:,0]
         seed_based_correlations = np.dot(brain_time_series.T, seed_time_series) / \
                           seed_time_series.shape[0]
-        #pdb.set_trace()
         print "seed-based correlation shape", seed_based_correlations.shape
         print "seed-based correlation: min =", seed_based_correlations.min(), " max = ", seed_based_correlations.max()
         #Fisher-z transform the data to achieve a normal distribution. 
@@ -241,16 +347,16 @@ def test_connectome_timeseries(epi_file=None, dim_coords=None):
         seed_based_correlation_img.to_filename('sbc_z.nii.gz')
         pcc_coords = dim_coords.values()[0]
         #pcc_coords = [(0, -52, 18)]
-        MNI152Template = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_symmetric.nii.gz'
+        #MNI152Template = '/usr/local/fsl/data/standard/MNI152_T1_2mm_brain_symmetric.nii.gz'
         #remove out-of brain functional connectivity using a mask
         icbms = datasets.fetch_icbm152_2009()
         masker_mni = NiftiMasker(mask_img=icbms.mask)
         data = masker_mni.fit_transform('sbc_z.nii.gz')
         masked_sbc_z_img = masker_mni.inverse_transform(data)
-        display = plotting.plot_stat_map(masked_sbc_z_img , cut_coords=pcc_coords, threshold=0.6, title= 'PCC-based corr. V-A', dim='auto', display_mode='ortho')
+        display = plotting.plot_stat_map(masked_sbc_z_img , cut_coords=pcc_coords, \
+                                         threshold=0.6, title= 'PCC-based corr. V-A', dim='auto', display_mode='ortho')
         #Coherency
 
-        #pdb.set_trace()
         #display.add_markers(marker_coords=pcc_coords, marker_color='g', marker_size=300)
         # At last, we save the plot as pdf.
         #display.savefig('sbc_z.pdf')
@@ -272,27 +378,66 @@ def  load_fmri_image_name(image_file=None):
     if image_file is None:
         dir_name = '/Users/jaime/vallecas/mario_fa/RF_off'
         dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
-        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0537_1'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0650_0'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/rf_off'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0578_1'
         f_name = 'bold_data_mcf2standard.nii'
         f_name = 'wbold_data.nii'
         image_file = os.path.join(dir_name, f_name)
+    preprocessing = False
+    if preprocessing == True:
+        print("Preprocessing the bold_data (MCFLIRT and SliceTimer)")
+        pre_processing_bold(image_file)
     return image_file, image_params
 
-def plot_ts_network(ts, lab):
-    # plot_ts_network  Plot time series for a network 
-    # Input: ts time series object
-    # lab: list of labels
-    plt.figure()
-    for ts_ix, label in zip(ts.T, lab):
-        plt.plot(np.arange(0,len(ts_ix)), ts_ix, label=label)
+def pre_processing_bold(image_file, dir_name=None):
+    """Preprocessing bold_data using the FSL wrapper
+    
+    MCFLIRT and SliceTimer
+    """
+    from nipype.interfaces import fsl
+    slicetimer = False
+    if  slicetimer == True: 
+        print "slicetimer interleave for bold:", image_file, " original bold will be overweritten"
+        st = fsl.SliceTimer()
+        st.inputs.in_file = image_file
+        st.inputs.interleaved = True
+        st.inputs.out_file = image_file
+        st.inputs.output_type = 'NIFTI'
+        result = st.run()
+    motion_correction = True
+    if motion_correction == True:
+        print "Motion correction for bold:", image_file
+        mcflt = fsl.MCFLIRT()
+        mcflt.inputs.in_file = image_file
+        mcflt.inputs.cost = 'mutualinfo'
+        mcflt.inputs.out_file = image_file
+        mcflt.inputs.output_type = 'NIFTI'
+        res = mcflt.run()
+
+def plot_ts_network(ts, labels=None, subject_id=None,rs_net_name=None):
+    """plot time series ts 
+    
+    ts: time series object
+    labels: list of labels
+    """
+    # distinguish between coordinates and atlas to do not have a lgend when an atlas
+    if labels is None:
+        msgtitle = 'Atlas Time Series for %s standarize is %s' % (subject_id, standarize)
+        for ts_ix in np.arange(0,  ts.shape[1]):
+            plt.plot(np.arange(0,ts.shape[0]), ts[:,ts_ix])       
+    else:
+        msgtitle = '%s %s Time Series' % (subject_id, rs_net_name)
+        for ts_ix, label in zip(ts.T, labels):
+            plt.plot(np.arange(0,len(ts_ix)), ts_ix, label=label)
         
-    plt.title('Default Mode Network Time Series')
+    plt.title(msgtitle)
     plt.xlabel('Time points (TR=2.5s)')
     plt.ylabel('Signal Intensity')
     plt.legend()
-    plt.tight_layout()
+    #plt.tight_layout()
     
-def plot_ts_connectome(ts, kind_of_corr=None, labelnet=None):
+def plot_ts_connectome(ts, kind_of_corr=None, labelnet=None, subject_id=None):
     """plot correlation netween time series using nilearn.plotting.plot_connectome
     
     ts: time series at least 2
@@ -303,36 +448,109 @@ def plot_ts_connectome(ts, kind_of_corr=None, labelnet=None):
     from sklearn.covariance import LedoitWolf, EmpiricalCovariance
     if kind_of_corr is None:
         kind_of_corr='correlation'
-    if labelnet is None:
-        labelnet='DMN'  
-        #connectivity_measure = ConnectivityMeasure(kind=kind_of_corr) 
-        #connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=False, block_size=1000, store_precision=False), kind=kind_of_corr) 
-        connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=True), kind=kind_of_corr) 
-        correlation_matrix = connectivity_measure.fit_transform([ts])[0] 
-        #print  correlation_matrix
-        coords_dict = get_MNI_coordinates(labelnet)  
-        plotting.plot_connectome(correlation_matrix, coords_dict.values(),edge_threshold='05%',
-                         title=labelnet,display_mode="ortho",edge_vmax=.5, edge_vmin=-.5)
-        return correlation_matrix    
-           
-def load_masker(dim_coords=None):   
-    """Returns the Masker object from an Atlas (mask_file) or a list of voxels
+    connectivity_measure = ConnectivityMeasure(EmpiricalCovariance(assume_centered=True), kind=kind_of_corr) 
+    correlation_matrix = connectivity_measure.fit_transform([ts])[0] 
+    #if the ts belong to an atlas 
+    msgtitle = `subject_id`+ " " + ` labelnet`
+    if labelnet[0:4] == 'cort':
+        #obtaining the atlas areas
+        legend_values = get_atlas_labels(labelnet)
+        #we need the coordinates of each region . dont know how to get those
+        #http://nilearn.github.io/modules/reference.html#module-nilearn.datasets
+    else:
+        #ts are from spheres coordinates        
+        coords_dict = get_MNI_coordinates(labelnet)
+        legend_values = coords_dict.values()   
+        plotting.plot_connectome(correlation_matrix, legend_values,edge_threshold='05%',
+                         title=msgtitle,display_mode="ortho",edge_vmax=.5, edge_vmin=-.5)
+    return correlation_matrix    
+
+def get_atlas_labels(label):
+    """return the labels of an atlas
+    """
+    if label[0:4] == 'cort':
+            dataset = datasets.fetch_atlas_harvard_oxford(label)
+            legend_values = dataset.labels[1:]
+            return legend_values
     
-    Input: dim_coords None || [] returns None (in the future will return a list of brain voxels, the full brain).
+def generate_mask(type_of_mask, epi_filename=None, sphere_coords=None):
+    """generate a mask calling to NiftiSpheresMasker, NiftiLabelsMasker or NiftiMasker
+    
+    type_of_mask: 'atlas'
+    type_of_masl: 'spheres' 
+    type_of_mask: 'brain-wide'
+    epi_filename: bold_ image necessary only for brain-wide to build the raw mask
+    """
+    import nilearn.image as image
+    from nilearn.plotting import plot_roi, show
+    #mask parameters
+    #high_pass, low_pass,smoothing_fwhm,standardize,t_r,verbose,detrend
+    masker = []
+    if type_of_mask == 'atlas':
+        #Load Harvard-Oxford parcellation from FSL if installed, If not, it \
+        #downloads it and stores it in NILEARN_DATA directory
+        #Name of atlas to load. Can be: cort-maxprob-thr0-1mm, cort-maxprob-thr0-2mm, 
+        #cort-maxprob-thr25-1mm, cort-maxprob-thr25-2mm, cort-maxprob-thr50-1mm, 
+        #cort-maxprob-thr50-2mm, sub-maxprob-thr0-1mm, sub-maxprob-thr0-2mm, 
+        #sub-maxprob-thr25-1mm, sub-maxprob-thr25-2mm, sub-maxprob-thr50-1mm, 
+        #sub-maxprob-thr50-2mm, cort-prob-1mm, cort-prob-2mm, sub-prob-1mm, sub-prob-2mm
+        atlas_name ='cort-maxprob-thr25-2mm'
+        # The mask is an Atlas
+        dataset = datasets.fetch_atlas_harvard_oxford(atlas_name)
+        atlas_filename = dataset.maps
+        masker = NiftiLabelsMasker(labels_img=atlas_filename, standardize=standarize,detrend=detrend, \
+                                   smoothing_fwhm=smoothing_fwhm,low_pass=low_pass,\
+                                   high_pass=high_pass,t_r=t_r,verbose=verbose)
+        print "Generated mask for Atlas:", atlas_name 
+        plotting_atlas = True
+        if plotting_atlas is True:
+            plotting.plot_roi(atlas_filename, title=atlas_name)
+    elif type_of_mask == 'spheres':
+        #to generate a mask from coordinates load_spheres_mask([x,y,z],[i,j,k]]])
+        masker = load_spheres_mask(sphere_coords)
+        print "Generated mask for Spheres", masker 
+    elif type_of_mask == 'brain-wide':
+        #extract from  lready masked data or from raw EPI data
+        extract_from_raw_epi_data = True
+        if extract_from_raw_epi_data is True:
+            print "Extracting mask for raw EPI data:", epi_filename
+            try:
+                mean_img = image.mean_img(epi_filename)
+                # Simple mask extraction from EPI images
+                # We need to specify an 'epi' mask_strategy, as this is raw EPI data
+                masker = NiftiMasker(mask_strategy='epi',standardize=standarize,detrend=detrend,smoothing_fwhm=smoothing_fwhm,low_pass=low_pass,\
+                                     high_pass=high_pass,t_r=t_r,verbose=verbose)
+                masker.fit(epi_filename)
+                plot_roi(masker.mask_img_, mean_img, title='EPI automatic mask')
+                # Generate mask with strong opening
+                #masker = NiftiMasker(mask_strategy='epi', mask_args=dict(opening=10))
+                #masker.fit(epi_filename)
+                #plot_roi(masker.mask_img_, mean_img, title='EPI Mask with strong opening')
+            except:
+                warnings.warn('ERROR loading EPI data for Raw mask, check that the EPI data exists and is passed as an argument',Warning)
+        else:
+            # extract from already existing image, MNI 2mm
+            icbms = datasets.fetch_icbm152_2009()
+            masker = NiftiMasker(mask_img=icbms.mask)
+            print "Generated mask for brain-wide MNI 152 mask" 
+    else:
+        masker = []
+        warnings.warn("ERROR calling generate_mask. Use generate_mask('atlas'|'spheres'|brain-wide', epi_filename=None), Warning")
+    return masker    
+
+     
+def load_spheres_mask(dim_coords=None):   
+    """Returns the Masker object for a mask type shperes
+    
     dim_coords: dictionary of a network of interest eg DMN.
     dim_coords: list of coordinates of voxels.    
-    dim_coords: atlas_harvard_oxford, eg 'cort-maxprob-thr25-2mm'  
-    dim_coords: 'brain-wide'
 
-    Example: load_masker() #returns masker for the entire brain
+    Example: 
     load_masker(get_MNI_coordinates('MNI'))  #returns masker for the the MNI coordinates
-    load_masker([(0, -52, 18),(10, -52, 18)]) #returns masker for a list of coordinates 
-    load_masker('cort-maxprob-thr25-2mm') #returns masker for the atlas_harvard_oxford atlas thr25 and 2mm
-                                             
+    load_masker([(0, -52, 18),(10, -52, 18)]) #returns masker for a list of coordinates                                             
     """
-    standarize = True # standardize If standardize is True, the time-series are centered and normed: their mean is set to 0 and their variance to 1 in the time dimension.
     radius = 8 #in mm. Default is None (signal is extracted on a single voxel
-    smoothing_fwhm = None # If smoothing_fwhm is not None, it gives the full-width half maximum in millimeters of the spatial smoothing to apply to the signal.
+    #smoothing_fwhm = None # If smoothing_fwhm is not None, it gives the full-width half maximum in millimeters of the spatial smoothing to apply to the signal.
 
     if dim_coords is None or len(dim_coords) == 0:    
         print "No mask used, process the entire brain"
@@ -341,79 +559,29 @@ def load_masker(dim_coords=None):
         # Extract the coordinates from the dictionary
         print " The mask is the list of voxels:", dim_coords.keys(), "in MNI space:", dim_coords.values()
         masker = input_data.NiftiSpheresMasker(dim_coords.values(), radius=radius,
-                                               detrend=True, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
-                                               low_pass=0.2, high_pass=0.001, 
-                                               t_r=2.5,memory='nilearn_cache', 
-                                               memory_level=1, verbose=2, allow_overlap=False)
+                                               detrend=detrend, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
+                                               low_pass=low_pass, high_pass=high_pass, 
+                                               t_r=t_r,memory='nilearn_cache', 
+                                               memory_level=1, verbose=verbose, allow_overlap=False)
         print masker
     elif type(dim_coords) is list:  
         # Extract the coordinates from the dictionary
         print " The mask is the list of voxels:", dim_coords
         masker = input_data.NiftiSpheresMasker(dim_coords, radius=radius,
-                                               detrend=True, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
-                                               low_pass=0.2, high_pass=0.001, 
-                                               t_r=2.5,memory='nilearn_cache', 
-                                               memory_level=1, verbose=2) 
-    elif dim_coords == 'brain-wide':
-        # Extract the maksker of the entire brain
-        masker = input_data.NiftiMasker(smoothing_fwhm=6, detrend=True, standardize=standarize,
-                                              low_pass=0.2, high_pass=0.001, t_r=2.5,
-                                              memory='nilearn_cache', memory_level=1, verbose=2)
-    else:
-        # The mask is an Atlas
-        dataset = datasets.fetch_atlas_harvard_oxford(dim_coords)
-        atlas_filename = dataset.maps
-        plotting_atlas = False
-        if plotting_atlas is True:
-            plotting.plot_roi(atlas_filename)
-        # Build the masker object
-        masker = NiftiLabelsMasker(labels_img=atlas_filename, standardize=False)
-        #time_series = masker.fit_transform(image_file)
+                                               detrend=detrend, smoothing_fwhm=smoothing_fwhm,standardize=standarize,
+                                               low_pass=low_pass, high_pass=high_pass, 
+                                               t_r=t_r,memory='nilearn_cache', 
+                                               memory_level=1, verbose=verbose) 
     return masker
         
-def createDataFrame_from_image(image_file=None, masker=None):
-    # createDataFrame to work with pandas time series from nifti image and Masker object
-    # If no mask, the mask is the entire brain and return pvalues array[x,y,zpavlue] if mask is given return the time series for each 
-    # ROI of the mask. nomask doesnt return time series but 1 if the voxel is non stationay 0 if it is.
-    if image_file is None:
-        # Load image
-        image_file, image_params = load_fmri_image_name(image_file=None)
-        #data_path = '/Users/jaime/vallecas/mario_fa/mario_fa_dicoms/FA10_SIN_rf' 
-        #image_file = '20170126_172022rsfMRIFA4s005a1001.nii.gz'
-    image_data = nib.load(image_file).get_data()
-    dims_image = image_data.shape
-    # Create DataFrame from ndarray
-    # Generate the voxels_list All brain voxels or specific voxel coordinates that correspond to areas of interest
-    if masker is None:
-        # The mask is the entire brain
-        tot_voxels = ((dims_image[0]-1)*(dims_image[1]-1)*(dims_image[2]-1),3)
-        print "Total number of voxels ", tot_voxels
-        #voxels_list = np.zeros(tot_voxels)
-        voxels_list = []
-        for i in np.arange(0, dims_image[0]-1):
-            label = []
-            for j in np.arange(0, dims_image[1]-1):
-                for k in np.arange(0, dims_image[2]-1):
-                    label = [i,j,k]
-                    voxels_list.append(label)
-                    
-        pvalues = extract_ts_from_brain(image_data, voxels_list)
-        return pvalues
-        # plot number of voxels that are non stationary
-        
-    else:
-        # The masker can be an Atlas or a list of voxels 
-        time_series = masker.fit_transform(image_file)   
-    return time_series
-
 def compute_seed_coherence(time_series, image_file=None, image_params=None):
     """compute seed based coherency analysis for one seed and the brain
     
     time_series: time series of theseeds
     """
     import nitime.fmri.io as io
-    f_lb = 0
-    f_ub = 0.2
+    #f_lb = 0
+    #f_ub = 0.2
     if image_file is None: [image_file,image_params] = load_fmri_image_name()
     #ts of the only one seed passed as an argument
     #ts_seed = np.transpose(time_series)
@@ -427,24 +595,23 @@ def compute_seed_coherence(time_series, image_file=None, image_params=None):
                                 coords_seeds,
                                 TR=image_params['TR'],
                                 normalize='percent',
-                                filter=dict(lb=f_lb,
-                                            ub=f_ub,
+                                filter=dict(lb=high_pass,
+                                            ub=low_pass,
                                             method='boxcar'))
     time_series_target = io.time_series_from_file(image_file,
                                           coords_target,
                                           TR=image_params['TR'],
                                           normalize='percent',
-                                          filter=dict(lb=f_lb,
-                                                      ub=f_ub,
+                                          filter=dict(lb=high_pass,
+                                                      ub=low_pass,
                                                     method='boxcar'))
     #remove nan
     [nn, pp] = time_series_target.shape
     for i in range(0,nn):
         time_series_target.data[i] = nitime.utils.thresholded_arr(time_series_target.data[i], fill_val=0.)
-    print "Calculating     SeedCoherenceAnalyzer"
-    pdb.set_trace()
+    print "Calculating  SeedCoherenceAnalyzer"
     A = SeedCoherenceAnalyzer(time_series_seed, time_series_target)
-    freq_idx = np.where((A.frequencies > f_lb) * (A.frequencies < f_ub))[0]
+    freq_idx = np.where((A.frequencies > high_pass) * (A.frequencies < low_pass))[0]
     coh = []
     coh.append(np.mean(A.coherence[0][:, freq_idx], -1))
     coords_indices = list(coords_target)
@@ -457,8 +624,7 @@ def compute_coherence_pairs_of_ts(time_series, image_params=None):
     """spectral analysis of the signal for the coherence. It uses CoherenceAnalyzer 
     and or SeedCoherenceAnalyzer, (nitime.analysis) are equivalent.    
     """
-    f_lb = 0
-    f_ub = 0.2
+
     if image_params is None: image_params = load_fmri_image_name()[1]
     combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
     time_series = np.transpose(time_series)
@@ -478,7 +644,7 @@ def compute_coherence_pairs_of_ts(time_series, image_params=None):
     print "Coherence seed:",seeds, " target:", targets, " = ", C1.coherence[0, 1], "\n Delay:", C1.delay[0, 1], "\n phases:", C1.phase[0, 1]
     #C2 = CoherenceAnalyzer(T)
     #print "Seed Coherence:", C2.coherence[1], " Delay:", C2.delay[1], " rphases:", C2.relative_phases[1]
-    freq_idx_C1 = np.where((C1.frequencies > f_lb) * (C1.frequencies < f_ub))[0]
+    freq_idx_C1 = np.where((C1.frequencies > high_pass) * (C1.frequencies < low_pass))[0]
     rows, cols, freqs = C1.coherence[:, :, freq_idx_C1].shape # coh.shape
     rows2 = len(seeds)
     cols2 = len(targets)
@@ -521,7 +687,7 @@ def plot_coupling_heatmap(corrmat, seeds, targets, labels, corr_type=None):
     
 
 def compute_granger_pair_of_ts(time_series, image_params=None):
-    """Calculate the Granger causality for pairs of tiem series using nitime.analysis.coherence
+    """Calculate the Granger causality for pairs of time series using nitime.analysis.coherence
     """
     
     if image_params is None: image_params = load_fmri_image_name()[1]
@@ -545,7 +711,7 @@ def test_of_grangercausality(time_series):
     nb_of_timeseries = len(time_series)
     Gres_all = []
     if nb_of_timeseries < 2:
-         warnings.warn("ERROR: We cant calculate Granger for only 1 tie series", Warning)
+         warnings.warn("ERROR: We cant calculate Granger for only 1 time series", Warning)
     else:
         combinations = list(itertools.combinations(range(time_series.shape[1]),2)) 
         for co in combinations:
@@ -557,7 +723,7 @@ def test_of_grangercausality(time_series):
             Gres_all.append(grangerres)
         return Gres_all
     
-def run_collinearity_on_df(y):
+def run_collinearity_on_df(y, subject_id=None):
     """Test for multicollinearity for y (Pandas.time series or ndarray) 
     Multicollinearity (collinearity) is a phenomenon in which two or more predictor variables
     in a multiple regression model are highly correlated. Shift the timeseries lag index times 
@@ -575,11 +741,11 @@ def run_collinearity_on_df(y):
         for index in np.arange(0,y.shape[1]):
             print "Estimating collinearity for ts ROI:", index, "/", y.shape[1]-1
             # print pd.Series(y[:,index])
-            res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]),index)
+            res_lagged = run_collinearity_on_ts(pd.Series(y[:,index]),index,subject_id)
             summary_list.append(res_lagged)
     return summary_list           
 
-def run_collinearity_on_ts(y, index=None):
+def run_collinearity_on_ts(y, index=None, subject_id=None):
     """Test for multicollinearity of time series
         
     """
@@ -597,14 +763,14 @@ def run_collinearity_on_ts(y, index=None):
     # If  the lagged values are highly correlated with each other the estimates of the slopes are not reliable
     plotresults = True
     if plotresults is True:
-        plot_collinearity_on_ts(res_lagged, df,"timeseries:%d" % (index))
+        plot_collinearity_on_ts(res_lagged, df,"%s timeseries:%d" % (subject_id, index))
     return res_lagged
 
 def plot_collinearity_on_ts(res_lagged,df,titlemsg):
         plt.figure()
         plt.subplot(2,1,1)
         sns.heatmap(df.corr(),vmin=-1.0, vmax=1.0) 
-        titlemsg2 = "Shifted " + titlemsg + "  correlation"
+        titlemsg2 = " Shifted " + titlemsg 
         plt.title(titlemsg2)      
         plt.subplot(2,1,2)
         #axarr[0,1] = plt.axes()
@@ -612,12 +778,12 @@ def plot_collinearity_on_ts(res_lagged,df,titlemsg):
         res_lagged.params.drop(['Intercept', 'trend']).plot.bar(rot=0)
         plt.ylim(-1,1)
         plt.ylabel('Coefficient')
-        titlemsg = 'Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)'
+        titlemsg = ' Correlation of the lagged coefficients: y ~ b(0) + ...+ b(5)' 
         plt.title(titlemsg)
         sns.despine()  
         #plt.show() 
         
-def run_autoregression_on_df(y):
+def run_autoregression_on_df(y, subject_id=None):
     """Run autoregression on a dataframe
        Autocorrelation also called serial correlation is observed  for 
        patterns between the observed and the predicted in the regression model.
@@ -630,13 +796,13 @@ def run_autoregression_on_df(y):
         summary_list = []
         for index in np.arange(0,y.shape[1]):
             print "Estimating autoregression for ts ROI:", index, "/", y.shape[1]-1 
-            res_trend  = run_autoregression_on_ts(pd.Series(y[:,index]), index)                                                                
+            res_trend  = run_autoregression_on_ts(pd.Series(y[:,index]), index, subject_id)                                                                
             summary_list.append(res_trend)                                                                
             print res_trend.summary()
                                                                             
     return summary_list        
                                                                 
-def run_autoregression_on_ts(y,index=None):  
+def run_autoregression_on_ts(y,index=None,subject_id=None):  
     """Run autoregression on a timeseries (ndarray)
     """
     if index is None: index=0
@@ -646,7 +812,7 @@ def run_autoregression_on_ts(y,index=None):
     # Plot the residuals time series, and some diagnostics about them
     plotacfpcf = True
     if plotacfpcf is True:    
-        plot_autoregression_on_ts(res_trend.resid,msgtitle = "timeseries:%d" % (index), lags=36)
+        plot_autoregression_on_ts(res_trend.resid,msgtitle = "%s timeseries:%d" % (subject_id, index), lags=36)
     return res_trend
 
 def plot_autoregression_on_ts(y,msgtitle,lags=None):
@@ -669,7 +835,7 @@ def plot_autoregression_on_ts(y,msgtitle,lags=None):
     #plt.title(msgtitle)
     return ts_ax, acf_ax, pacf_ax  
 
-def run_test_stationarity_adf(y):
+def run_test_stationarity_adf(y,run_test_stationarity_adf=None, subject_id=None):
     """Test stationarity of the dataframe using the dickey fuller test
     http://www.statsmodels.org/stable/generated/statsmodels.tsa.stattools.adfuller.html
     autolag : {‘AIC’, ‘BIC’, ‘t-stat’, None}
@@ -682,11 +848,11 @@ def run_test_stationarity_adf(y):
         summary_list = []
         for index in np.arange(0,y.shape[1]):
            print "===Estimating stationarity for ts ROI:", index, "/", y.shape[1]-1                                                               
-           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]), index)   
+           res_trend  = run_test_stationarity_adf_ts(pd.Series(y[:,index]), index,subject_id)   
            summary_list.append(res_trend)                                                                          
     return summary_list                                                                        
                                                                              
-def run_test_stationarity_adf_ts(timeseries, index=None):
+def run_test_stationarity_adf_ts(timeseries, index=None, subject_id=None):
     """ dickey fuller test of stationarity for time series
     H0: ts has unit root (non stationary)
     """ 
@@ -702,7 +868,7 @@ def run_test_stationarity_adf_ts(timeseries, index=None):
         mean = plt.plot(rolmean, color = 'red', label = 'Rolling mean')
         std = plt.plot(rolstd, color = 'black', label = 'Rolling std')
         plt.legend(loc='best')
-        msgtitle = "Rolling (window:" + ` window`+ ")" +" mean and std deviation timseries: " + `index`
+        msgtitle = `subject_id`+ " Rolling (window:" + ` window`+ ")" +" mean and std deviation timseries: " + `index` 
         plt.title(msgtitle)
     #Perform Dickey-Fuller test
     autolag = 'BIC'
@@ -715,7 +881,7 @@ def run_test_stationarity_adf_ts(timeseries, index=None):
         dfoutput['Critical Value (%s)'%key] = value                
     return dfoutput
 
-def run_arima_fit(y, order=None):
+def run_arima_fit(y, order=None,subject_id=None):
     """Fit a dataframe with ARIMA(order) model
     Calls to run_arima_fit_ts to fit timeseries with a ARIMA (SRIMAX) sesonal 
     autoregressive integrated moving average with exogenbeous regressors 
@@ -732,14 +898,14 @@ def run_arima_fit(y, order=None):
             #You need datetime index when you use pandas, but you can use a numpy ndarray for the series which does not need any index.
             try:
                 res_trend = []
-                res_trend  = run_arima_fit_ts(y[:,ind], ind, order)
+                res_trend  = run_arima_fit_ts(y[:,ind], ind, order,subject_id)
             except:
                 warnings.warn("ERROR: The ARIMA model is not invertible!!!", Warning)
             summary_list.append(res_trend) 
     print "ARIMA per time series objects created:", summary_list        
     return summary_list                                                          
         
-def run_arima_fit_ts(y, indexts=None, order=None):
+def run_arima_fit_ts(y, indexts=None, order=None,subject_id=None):
     """Fit timeseries with a ARIMA (SRIMAX) sesonal autoregressive integrated moving average with exogenbeous regressors 
     """
     res_arima = []
@@ -760,7 +926,7 @@ def run_arima_fit_ts(y, indexts=None, order=None):
         #print "ARIMA AIC=", res_arima.aic
         arima_plot = True
         if arima_plot is True:
-            msgtitle= ' for Timeseries:' + `indexts`+ ' using ARIMA(p,d,q):'+ `pe` + `de` + `qu`
+            msgtitle= `subject_id` +' for Timeseries:' + `indexts`+ ' using ARIMA(p,d,q):'+ `pe` + `de` + `qu`
             plot_autoregression_on_ts(pd.Series(res_arima.resid[2:]), msgtitle,lags=36)
     except:
             warnings.warn("ERROR: The ARIMA model is not invertible!!!", Warning)
@@ -947,16 +1113,16 @@ def plot_correlation_histogram(correlation_array, correlation_array_std, all_cor
         # add a 'best fit' line
         plt.show()
         
-def compute_nonlinear_statistics(timeseries, nb_of_timepoints=None):
+def compute_nonlinear_statistics(timeseries):
     """Calculate a battery of significant statistics (non linear measures) for a time structure. 
     The argument "timeseries" can be a Pandas dataframe, Pandas time series or a ndarray.
     The measures that are calculated are: correlation dimension, sample entropy,
-    Lyapunov exponents. It calls to compute_nonlinear_statistics_ts for eac time series
+    Lyapunov exponents. It calls to compute_nonlinear_statistics_ts for each time series
     We use the numpy-based library NonLinear measures 
     for Dynamical Systems (nolds) 
     https://pypi.python.org/pypi/nolds/0.2.0
     """
-    if nb_of_timepoints is None: nb_of_timepoints = 116
+
     if isinstance(timeseries, pd.core.frame.DataFrame):
         #rename time series tructure
         dataframe = timeseries
@@ -980,17 +1146,45 @@ def compute_nonlinear_statistics_nda(timeseries):
     """Calculate a battery of significant statistics (non linear measures) of 
     a given Pandas time series.
     """
+    import warnings
+    warnings.filterwarnings(action="ignore", module="scipy", message="^internal gelsd")
+    corr_dim_list = []
+    ap_entropy_list =[]       
+    lyap_list =[]
+    hurst_list = []
+    
     #print "\t Calculating the correlation dimension (degrees of freedom) using Grassberger-Procaccia_algorithm ..."
     # http://www.scholarpedia.org/article/Grassberger-Procaccia_algorithm
     #emb_dim=1 because we are dealing with one dimensional time series
-    emb_dim = 1 
-    #Call corr_dimension with rvals by default (iterable of float): rvals=logarithmic_r(0.1 * std, 0.5 * std, 1.03))
-    corr_dim = nolds.corr_dim(timeseries, emb_dim)
-    #print "\t Calculating the Lyapunov exponents(initial conditions sensibility)) of the time series..."
-    lyap = nolds.lyap_r(timeseries) # lyap_r for largest exponent, lyap_e for the whole spectrum
-    #print "\t Calculating the sample entropy(complexity of time-series) based on approximate entropy..."
-    ap_entropy = nolds.sampen(timeseries)
-    nonlmeasures = {'corr_dim':corr_dim,'sampen':ap_entropy,'lyap':lyap}
+    timepoints, voxels = timeseries.shape
+    emb_dim = 2 
+    print "Computing corr_dimension for time series shape:...", timeseries.shape 
+    #with rvals by default (iterable of float): rvals=logarithmic_r(0.1 * std, 0.5 * std, 1.03))
+    for i in range(0,voxels):
+        corr_dim = nolds.corr_dim(timeseries[:,i], emb_dim=emb_dim)
+        corr_dim_list.insert(i,corr_dim)
+    print "correlation dimension all voxels:", corr_dim_list, " mean is:", np.mean(corr_dim_list), " emb_dim:", emb_dim
+    
+    print "\t Calculating the Lyapunov exponents(initial conditions sensibility)) of the time series..."
+    for i in range(0,voxels):
+        lyap = nolds.lyap_r(timeseries[:,i], emb_dim=emb_dim) # lyap_r for largest exponent, lyap_e for the whole spectrum
+        lyap_list.insert(i,lyap)
+    #print "Lyapunov largest exponent all voxels:", lyap_list, " mean is:", np.mean(lyap_list), " emb_dim:", emb_dim    
+    
+    print "\t Calculating the sample entropy(complexity of time-series) based on approximate entropy..."
+    for i in range(0,voxels):
+        ap_entropy = nolds.sampen(timeseries[:,i], emb_dim=emb_dim)
+        ap_entropy_list.insert(i,ap_entropy)
+    print "\t Calculating  Hurst exponent for long-term memory of the time series "
+    for i in range(0,voxels):
+        hurst = nolds.hurst_rs(timeseries[:,i])
+        hurst_list.insert(i,hurst)
+        #(if K = 0.5 there are no long-range correlations in the data,
+        #if K < 0.5 there are negative long-range correlations, 
+        #if K > 0.5 there are positive long-range correlations
+    #print "Sample entropy all voxels:", ap_entropy_list, " mean is:", np.mean(ap_entropy_list), " emb_dim:", emb_dim    
+    nonlmeasures = OrderedDict([('corr_dim',corr_dim_list), ('sampen', ap_entropy_list), ('lyap', lyap_list), ('hurst',hurst_list)])
+    #print "emb_dim:",emb_dim , " Mean Correlation dimension:", nonlmeasures['corr_dim'], " Mean Sample entropy:", nonlmeasures['sampen'], " Mean Lyapunov exponents",nonlmeasures['lyap'] 
     return nonlmeasures   
 
 def stat_hyp_test_orig_vs_surr(orig_ts, surrogate_df):
@@ -1077,9 +1271,10 @@ def plot_significance_test(ts_sig_test, df_sig_test):
 #    plt.xticks(range(1,max_emb_dim+1))
 #    fig2.savefig('corr_dimension.jpg')
 
-def ts_similarity(df1, df2):    
-    #Calculate dynamic time warping between time series
-    # return a matrix nxn fn is the number of time series Mij is the DTW distamce between two time series
+def ts_similarity(df1, df2, subject_id=None):    
+    """Calculate dynamic time warping between time series
+    return a matrix nxn fn is the number of time series Mij is the DTW distamce between two time series
+    """
     DTW_list,KStest = [], []
     cols1, cols2 = 1, 1
     if isinstance(df1, pd.core.frame.Series) and isinstance(df2, pd.core.frame.Series):
@@ -1097,7 +1292,6 @@ def ts_similarity(df1, df2):
                 y = df2[i]
                 distance, path = ts_DTW(df1, y)
                 DTW_list.append(distance)
-                #pdb.set_trace()
                 KStest.append((ts_KS_2samples(df1, y)[1]))
                 
     elif isinstance(df2, pd.core.frame.Series):        
@@ -1130,13 +1324,14 @@ def ts_similarity(df1, df2):
         DTW_array = np.asarray(DTW_list)
         DTW_array = DTW_array.reshape(cols1, cols2)
         ax = sns.heatmap(DTW_array, xticklabels=5, yticklabels=False)
-        ax.set(xlabel='null model voxels', ylabel='observed ts')
-        ax.set_title('Dynamic Time Warping distance')
+        ax.set(xlabel='null model ts voxel', ylabel='observed ts voxel')
+        msgtitle = 'Dynamic Time Warping distance', subject_id
+        ax.set_title(msgtitle)
         KS_array = np.asarray(KStest)
-        #pdb.set_trace()
         #KS_array = KS_array.reshape(cols1, cols2)
         plt.figure()
         ax = sns.heatmap([KS_array], xticklabels=5, yticklabels=False)
+        msgtitle = '%s Kolmogorov SmirnoffS ', subject_id
         ax.set(xlabel='null model voxels', ylabel='observed ts', title = 'KS 2 samples')
         #ax.set_title('KS 2 sample test')
         
@@ -1212,10 +1407,22 @@ def get_MNI_coordinates(label):
         #dim_coords = {label[0]:(0, -52, 18),label[1]:(-46, -68, 32), label[2]:(46, -68, 32),label[3]:(1, 50, -5)} #from nilearn page
         dim_coords = OrderedDict([(label[0],(0, -52, 18)),(label[1],(-46, -68, 32)), (label[2],(46, -68, 32)),(label[3],(1, 50, -5))])
         #make sure dictionary respects the order of the keys
-        #pdb.set_trace()
     elif label is 'SN':
         # Salience network
         dim_coords = []    
     else: 
         print " ERROR: label:", label, " do not found, returning empty list of coordinates!"   
     return dim_coords   
+
+def save_dict_in_file(nonlinearresults,type_of_mask=None):
+    """save dictionary into a csv file
+    
+    nonlinearresults: non linear measures
+    """
+    import csv
+    filename = '%s_dictionaryoutput' % type_of_mask
+    filename = filename + '.csv'
+    w = csv.writer(open(filename, "w"))
+    for key, val in nonlinearresults.items():
+        w.writerow([key, val])
+    print "Saved dict with nonlinar measures in file:", filename
