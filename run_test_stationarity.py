@@ -21,6 +21,7 @@ from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.stattools import grangercausalitytests
 from scipy.io import loadmat  # this is the SciPy module that loads mat-files
 from scipy.spatial.distance import euclidean
+import scipy as sp
 from scipy import stats
 from scipy import signal
 
@@ -61,14 +62,19 @@ standarize = True
 detrend = True
 #smoothing_fwhm = None  If smoothing_fwhm is not None, it gives the full-width 
 #half maximum in millimeters of the spatial smoothing to apply to the signal.
-smoothing_fwhm = 0
+smoothing_fwhm = 8
 t_r = 2.5
 low_pass = 0.2
 high_pass = 0.001
 verbose = 2
 
+plt.close('all')
+plt.clf()
+
+
 def test_group_analysis(epi_file_list=None):
     """group analysis of bold data. Calculates the components of a list of bold images
+        
     """
     from nilearn.decomposition import CanICA
     from nilearn.plotting import plot_prob_atlas
@@ -79,7 +85,7 @@ def test_group_analysis(epi_file_list=None):
         epi_file_list = []
         subjects_list = ['bcpa0537_0','bcpa0517', 'bcpa0530', 'bcpa0540','bcpa0543', 'bcpa0545','bcpa0576','bcpa0577','bcpa0578_0','bcpa0581','bcpa0650_0']
         subjects_list = ['bcpa0537_1','bcpa0578_1', 'bcpa0650_1']
-        #dir_name = '/Users/jaime/vallecas/data/surrogate/'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/'
         f_name = 'wbold_data.nii'
         for i in range(0,len(subjects_list)):
             subjname = os.path.join(dir_name,subjects_list[i])
@@ -105,7 +111,7 @@ def test_clustering_in_rs(epi_file=None):
     """
     from sklearn.cluster import FeatureAgglomeration
     from sklearn.feature_extraction import image
-    import time
+    #import time
     from nilearn.plotting import plot_roi, plot_epi, show
     from nilearn.image import mean_img
 
@@ -126,13 +132,14 @@ def test_clustering_in_rs(epi_file=None):
     connectivity = image.grid_to_graph(n_x=shape[0], n_y=shape[1],
                                    n_z=shape[2], mask=mask)
     
-    start = time.time()  
+    #pdb.set_trace()
+    tic = datetime.now()
     #FeatureAgglomeration clustering algorithm from scikit-learn 
     n_clusters= 40
     ward = FeatureAgglomeration(n_clusters, connectivity=connectivity,
                             linkage='ward', memory='nilearn_cache')
     ward.fit(fmri_masked)
-    print("Ward agglomeration %d clusters: %.2fs" % (n_clusters, time.time() - start))
+    print("Ward agglomeration %d clusters: " % n_clusters, "in time=", str(datetime.now()- tic))
     #visualioze the results
     labels = ward.labels_ + 1
     labels_img = nifti_masker.inverse_transform(labels)
@@ -155,11 +162,12 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
     """
     if epi_file is None:
         [epi_file, epi_params]= load_fmri_image_name()
-        print " EPI file:", epi_file, " EPI params:", epi_params    
+    else:
+        [epi_file, epi_params]= load_fmri_image_name(epi_file)    
+    print " EPI file:", epi_file, " EPI params:", epi_params    
     if type_of_mask is None:
         #if not mask specified used harvard cortical atlas
-        type_of_mask = ['brain-wide', 'atlas', 'spheres' ]
-        type_of_mask = type_of_mask[2]
+        type_of_mask = ['brain-wide', 'atlas', 'spheres'][2]
     subject_id = os.path.split(os.path.dirname(epi_file))[1]
     label_coords = None
     epi_data = None
@@ -186,7 +194,7 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
     if type_of_mask != 'brain-wide':
         plot_ts_network(time_series, label_coords,subject_id,rs_network_name)  
     
-    non_lin_stats = True
+    non_lin_stats = False
     if non_lin_stats is True:    
         nonlinearresults = compute_nonlinear_statistics(time_series)
         print "Subject:", subject_id, ", Mean of nonlinear measures: corr_dim=", np.mean(nonlinearresults['corr_dim']),\
@@ -208,6 +216,33 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
        #print "Calling to run_forecasting to study predictability of the time series for the ARIMA"
        #res_forecasting = run_forecasting(res_arima)
        #return masker, time_series, res_lagged, res_acf, res_stationarity, res_arima 
+    hetero_test = False
+    if hetero_test is True:
+        results_heterotest= []
+        print "Running test for Heteroscedasticity:  Null assumption = residuals from a regression is homogeneous (constant volatility)"
+        print "Performing autoregression in each time series, number of time series", time_series.shape[1]
+        print("Running Test of heteroskedasticity. H0: Residuals of autoregression are Homogeneous")
+        residuals_res =run_autoregression_on_df(time_series)
+        for i in np.arange(0, time_series.shape[1]):
+            #pdb.set_trace()
+            reg_predicted = residuals_res[i].predict()
+            reg_residuals = residuals_res[i].resid
+            het_res = test_heteroscedasticity(reg_predicted, time_series[:,i])
+            results_heterotest.append(het_res)
+            print('Breusch Pagan test value, df, p-value')
+            print subject_id , ' time series:', i, ' bp = ', het_res
+            #het_res_white = test_heteroscedasticity(reg_residuals, time_series[:,i], 'white')
+        #plot results of heteroscedasticity test
+        rejecth0het = 0
+        for ix in np.arange(0,len(results_heterotest)):
+            if results_heterotest[ix][2] < 0.05:
+                rejecth0het = rejecth0het + 1
+                print 'Reject null hypothesis (homoscedasticity) for ts=', ix, ' p_value = ', results_heterotest[ix][2], \
+                                         'bp = ', results_heterotest[ix][0]
+        print subject_id, ' Number of time series with heteroscedasticity = ', rejecth0het, ' /', ix
+    #plt.close('all')
+    #plt.clf()
+       
     display_connectome = True
     if display_connectome is True:
         kind_of_correlation = 'correlation'
@@ -260,7 +295,7 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         fig_G_drawx = drawmatrix_channels(np.mean(G.causality_xy[:, :, freq_idx_G], -1), dim_coords.keys(), size=[10., 10.], color_anchor=0, title= msgtitle)            
         #plotting GC as a network with nodes of variable size and label in it from nitime
         fig_G_drawg = drawgraph_channels(np.nan_to_num(np.mean(G.causality_xy[:, :, freq_idx_G], -1)), dim_coords.keys(),title=msgtitle)
-    return     
+    
     fourier_analysis = True
     if fourier_analysis is True:
         print "Calculating the PSD of the time series"
@@ -277,8 +312,9 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         freq_idx = np.where((Coh_az.frequencies > high_pass) * (Coh_az.frequencies < low_pass))[0]
         coh = np.mean(Coh_az.coherence[:, :, freq_idx], -1)  # Averaging on the last dimension
         #pdb.set_trace()
-        fig03 = drawmatrix_channels(coh, label_coords, size=[10., 10.], color_anchor=0)
         fig04 = drawgraph_channels(coh, label_coords, title=msgtitle) 
+        fig03 = drawmatrix_channels(coh, label_coords, size=[10., 10.], color_anchor=0)
+        
                      
 #        [coherence_mat, seeds, targets] = compute_coherence_pairs_of_ts(time_series)
 #        print "Plotting functional connectivity of the Frequency spectrum"
@@ -289,7 +325,7 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         #msgtitle = 'Coherency DMN (Cad)'
         #SeedCoherency
         #compute_seed_coherence(time_series)
-    return                   
+                       
     surrogate_analysis = False
     if surrogate_analysis is True:
         num_realizations = 10
@@ -324,7 +360,6 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
     seed_based_connectome = True
     if seed_based_connectome is True:
         seed_masker = masker
-        pdb.set_trace()
         if time_series is None:
             time_series = seed_masker.fit_transform(epi_file)
         seed_time_series = time_series    
@@ -332,6 +367,12 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         brain_time_series = brain_masker.fit_transform(epi_file)
         print("seed time series shape: (%s, %s)" % seed_time_series.shape)
         print("brain time series shape: (%s, %s)" % brain_time_series.shape)
+        #make sure time series have same number of time points
+        if seed_time_series.shape[0] != brain_time_series.shape:
+            brain_time_series = brain_time_series[4:brain_time_series.shape[0],:]
+            print("The corrected time series dimension are:")
+            print("seed time series shape: (%s, %s)" % seed_time_series.shape)
+            print("brain time series shape: (%s, %s)" % brain_time_series.shape)
         #select the seed
         seed_time_series = seed_time_series[:,0]
         seed_based_correlations = np.dot(brain_time_series.T, seed_time_series) / \
@@ -353,8 +394,10 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         masker_mni = NiftiMasker(mask_img=icbms.mask)
         data = masker_mni.fit_transform('sbc_z.nii.gz')
         masked_sbc_z_img = masker_mni.inverse_transform(data)
+        pdb_set_tarce()
         display = plotting.plot_stat_map(masked_sbc_z_img , cut_coords=pcc_coords, \
                                          threshold=0.6, title= 'PCC-based corr. V-A', dim='auto', display_mode='ortho')
+        print("END OF PROGRAM")
         #Coherency
 
         #display.add_markers(marker_coords=pcc_coords, marker_color='g', marker_size=300)
@@ -380,7 +423,7 @@ def  load_fmri_image_name(image_file=None):
         dir_name = '/Users/jaime/vallecas/data/cadavers/nifti/bcpa_0537/session_1/PVALLECAS3/reg.feat'
         dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0650_0'
         dir_name = '/Users/jaime/vallecas/data/surrogate/rf_off'
-        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0578_1'
+        dir_name = '/Users/jaime/vallecas/data/surrogate/bcpa0650_1'
         f_name = 'bold_data_mcf2standard.nii'
         f_name = 'wbold_data.nii'
         image_file = os.path.join(dir_name, f_name)
@@ -392,11 +435,10 @@ def  load_fmri_image_name(image_file=None):
 
 def pre_processing_bold(image_file, dir_name=None):
     """Preprocessing bold_data using the FSL wrapper
-    
     MCFLIRT and SliceTimer
     """
     from nipype.interfaces import fsl
-    slicetimer = False
+    slicetimer = True
     if  slicetimer == True: 
         print "slicetimer interleave for bold:", image_file, " original bold will be overweritten"
         st = fsl.SliceTimer()
@@ -835,6 +877,32 @@ def plot_autoregression_on_ts(y,msgtitle,lags=None):
     #plt.title(msgtitle)
     return ts_ax, acf_ax, pacf_ax  
 
+def test_heteroscedasticity(y,x, typeoftest=None):
+    """test for heteroskedasticity
+    
+    x,y: ndarray for time series to run a regression
+    typeoftest: None, Breusch, and Pagan , other are White in %http://www.statsmodels.org/stable/diagnostic.html?highlight=heteroscedasticity
+
+    """
+    import statsmodels.stats.diagnostic
+    if typeoftest is None or typeoftest is 'bp':
+        
+        results = sm.OLS(y,x).fit()
+        resid = results.resid
+        sigma2 = sum(resid**2)/len(resid)
+        f = resid**2/sigma2 - 1
+        results2 = sm.OLS(f,x).fit()
+        fv = results2.fittedvalues
+        bp = 0.5 * sum(fv**2)            
+        df = results2.df_model
+        p_value = 1-sp.stats.chi.cdf(bp,df)
+        return round(bp,6), df, round(p_value,7)
+    elif typeoftest is 'white':
+        print("TO DO Running Test of heteroskedasticity, Breusch, and Pagan (1979)")
+        #statsmodels.stats.diagnostic.het_white(y, x)
+        
+    
+        
 def run_test_stationarity_adf(y,run_test_stationarity_adf=None, subject_id=None):
     """Test stationarity of the dataframe using the dickey fuller test
     http://www.statsmodels.org/stable/generated/statsmodels.tsa.stattools.adfuller.html
@@ -868,7 +936,7 @@ def run_test_stationarity_adf_ts(timeseries, index=None, subject_id=None):
         mean = plt.plot(rolmean, color = 'red', label = 'Rolling mean')
         std = plt.plot(rolstd, color = 'black', label = 'Rolling std')
         plt.legend(loc='best')
-        msgtitle = `subject_id`+ " Rolling (window:" + ` window`+ ")" +" mean and std deviation timseries: " + `index` 
+        msgtitle = `subject_id`+ " Rolling (window:" + ` window`+ ")" +" mean and std deviation time sries: " + `index` 
         plt.title(msgtitle)
     #Perform Dickey-Fuller test
     autolag = 'BIC'
@@ -876,7 +944,7 @@ def run_test_stationarity_adf_ts(timeseries, index=None, subject_id=None):
     dftest = adfuller(timeseries,maxlag=None, regression='c', autolag=autolag, store=False, regresults=False)
     # print dftest
     dfoutput = pd.Series(dftest[0:4], index=['Test Statistic','p-value','#Lags Used','Number of Observations Used'])
-    print "Timseries:", index, "H0: ts has unit root (non stationary). p-value:", dfoutput['p-value'] 
+    print "Time series:", index, "H0: ts has unit root (non stationary). p-value:", dfoutput['p-value'] 
     for key,value in dftest[4].items():
         dfoutput['Critical Value (%s)'%key] = value                
     return dfoutput
