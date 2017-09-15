@@ -22,8 +22,7 @@ from statsmodels.tsa.stattools import grangercausalitytests
 from scipy.io import loadmat  # this is the SciPy module that loads mat-files
 from scipy.spatial.distance import euclidean
 import scipy as sp
-from scipy import stats
-from scipy import signal
+from scipy import stats, signal, linalg
 
 from datetime import datetime, date, time
 import statsmodels.tsa.stattools as tsa
@@ -32,9 +31,10 @@ from nilearn import input_data
 from nilearn.input_data import NiftiLabelsMasker, NiftiMasker, NiftiMapsMasker 
 from nilearn import plotting
 from nilearn import datasets
-from nilearn import input_data
 from nilearn.connectome import ConnectivityMeasure
 from nipy.labs.viz import plot_map, mni_sform, coord_transform
+from nilearn.connectome import GroupSparseCovarianceCV
+from sklearn.covariance import GraphLassoCV, ledoit_wolf
 import seaborn as sns
 from fastdtw import fastdtw
 import nolds
@@ -52,6 +52,7 @@ from plotly.offline import download_plotlyjs, init_notebook_mode, plot, iplot
 from nitime.viz import drawmatrix_channels, drawgraph_channels
 from mpl_toolkits.mplot3d import Axes3D
 import warnings
+import networkx as nx
 
 #Global variables
 #standarize transform time series in unit variance
@@ -69,7 +70,7 @@ high_pass = 0.001
 verbose = 2
 
 plt.close('all')
-plt.clf()
+#plt.clf()
 
 
 def test_group_analysis(epi_file_list=None):
@@ -124,7 +125,7 @@ def test_clustering_in_rs(epi_file=None):
                                       mask_strategy='epi', memory_level=1,
                                       standardize=False)  
     #compute the mask and extracts the time series form the file(s)
-    fmri_masked = nifti_masker.fit_transform(epi_file)
+    fmri_masked = nifti_masker.fit_transform(epi_file[0])
     #retrieve the nup array of the mask
     mask = nifti_masker.mask_img_.get_data().astype(bool)
     #compute the connectivity matrix for the mask
@@ -144,7 +145,8 @@ def test_clustering_in_rs(epi_file=None):
     labels = ward.labels_ + 1
     labels_img = nifti_masker.inverse_transform(labels)
     mean_func_img = mean_img(epi_file)
-    msgtitle ="Ward parcellation nclusters=%s, %s" % (n_clusters, os.path.split(os.path.dirname(epi_file))[1])
+    #msgtitle ="Ward parcellation nclusters=%s, %s" % (n_clusters, os.path.split(os.path.dirname(epi_file))[1])
+    msgtitle = 'Ward parcellation Converters' + 'nb clusters='+ str(n_clusters)
     first_plot = plot_roi(labels_img, mean_func_img, title=msgtitle,
                       display_mode='ortho', cut_coords=(0,-52,18))
     cut_coords = first_plot.cut_coords
@@ -156,19 +158,34 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
     """ connectome time series characterization
     Run tests for collinearity, run_autoregression_on_df, stationarity and calculates the connectome of the given coords
     Example: test_connectome_timeseries() 
+    epi_file is a list of file paths epi_file = ['file1, 'file2' ...]
     test_connectome_timeseries(None, type_of_mask='spheres') 
     test_connectome_timeseries(None, type_of_mask='atlas')
     test_connectome_timeseries(None, type_of_mask='brain-wide') 
     """
+    preprocessing = False
     if epi_file is None:
         [epi_file, epi_params]= load_fmri_image_name()
     else:
-        [epi_file, epi_params]= load_fmri_image_name(epi_file)    
+        [epi_file, epi_params]= load_fmri_image_name(epi_file, preprocessing=preprocessing)    
     print " EPI file:", epi_file, " EPI params:", epi_params    
     if type_of_mask is None:
         #if not mask specified used harvard cortical atlas
         type_of_mask = ['brain-wide', 'atlas', 'spheres'][2]
-    subject_id = os.path.split(os.path.dirname(epi_file))[1]
+    # for studies with a directory for each patient
+
+    if type(epi_file) is list:
+        subject_id = []
+        for i in range(0, len(epi_file)):
+            # for all subjects in one folder
+            filename = os.path.split(os.path.basename(epi_file[i]))[1][:-9]
+            # converter or control
+            typeofsub = os.path.basename(os.path.dirname(epi_file[i]))
+            fileandtype = typeofsub + ':' + filename
+            subject_id.append(fileandtype)  
+    else:
+        subject_id = os.path.split(os.path.dirname(epi_file[0]))[1]
+        
     label_coords = None
     epi_data = None
     dim_coords = None
@@ -180,19 +197,39 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         rs_network_name = type_of_mask
         print("Using an Atlas as mask")
     elif type_of_mask == 'brain-wide':
-        epi_data = epi_file       
+        epi_data = epi_file[0]       
     #generate the mask, only if brain wide we need epi_data, if spheres dim_coords
     masker = generate_mask(type_of_mask, epi_data, dim_coords)
-    print("Masker parameters for subject:%s are:%s\n") % (subject_id, masker.get_params())
-    print("Extracting the time series for subject:%s and the Mask") % subject_id 
-    time_series = masker.fit_transform(epi_file)
-    if time_series.shape[0] == epi_params['n']:
-        warnings.warn("The time series number of points is 120, removing 4 initial dummy volumes", Warning)
-        time_series = time_series[4:time_series.shape[0],:]
-    print "Plotting time series for type_of_mask:", type_of_mask, " (txv)=", time_series.shape[0],  time_series.shape[1]    
+    # the same Mask for all subjects
+    print("Masker parameters for subject:%s are:%s\n") % (subject_id[0], masker.get_params())
+    print("Extracting the time series for subject:%s and the Mask") % subject_id[0] 
+
+    time_series = []
+    for i in range(0, len(epi_file)):
+        ts = masker.fit_transform(epi_file[i])
+        time_series.append(ts)         
+        if time_series[i].shape[0] == epi_params['n']:
+            #pdb.set_trace()
+            warnings.warn("The time series number of points is 120, removing 4 initial dummy volumes", Warning)
+            time_series[i] = time_series[i][4:120,:]
+    print('Number of features:', len(time_series), 'Feature dimension:', time_series[0].shape)      
     #plot time series only if the mask is not the entire brain
     if type_of_mask != 'brain-wide':
-        plot_ts_network(time_series, label_coords,subject_id,rs_network_name)  
+        for i in range(0, len(epi_file)):
+            print "Plotting time series for type_of_mask:", type_of_mask, " (txv)=", time_series[i].shape[0],  time_series[i].shape[1] 
+            #plot_ts_network(time_series[i], label_coords, subject_id[i], rs_network_name)  
+    
+    #pdb.set_trace() 
+    sparse_inverse_cov = True
+    if sparse_inverse_cov is True:
+        #print("Estimating the connectome from the Sparse Inverse Covariance for labels:", label_coords)
+        #estimator, lw_cov_ = sparse_inverse_estimator(time_series, label_coords, dim_coords)
+        # for n subjects
+        print('Number of Subjects=' , len(time_series),' Estimating the connectome from the Sparse Inverse Covariance for mask:', label_coords)
+        gsc = sparse_inverse_estimator_nsubjects(time_series,label_coords, dim_coords )
+      
+    print("END OF PROGRAM")
+    return    
     
     non_lin_stats = False
     if non_lin_stats is True:    
@@ -264,6 +301,7 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         elif type_of_mask == 'spheres': 
             #plotting kind_of_correlation as a network with nodes of variable size and label in it from nitime
             fig_C_drawg = drawgraph_channels(corr_matrix,label_map,title=msgtitle) 
+    
     dynamictimewarping = False
     if dynamictimewarping is True:
         print "Computing the Dynamic time warping for ts similarity"
@@ -394,10 +432,10 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         masker_mni = NiftiMasker(mask_img=icbms.mask)
         data = masker_mni.fit_transform('sbc_z.nii.gz')
         masked_sbc_z_img = masker_mni.inverse_transform(data)
-        pdb_set_tarce()
+        #pdb_set_tarce()
         display = plotting.plot_stat_map(masked_sbc_z_img , cut_coords=pcc_coords, \
                                          threshold=0.6, title= 'PCC-based corr. V-A', dim='auto', display_mode='ortho')
-        print("END OF PROGRAM")
+        
         #Coherency
 
         #display.add_markers(marker_coords=pcc_coords, marker_color='g', marker_size=300)
@@ -409,7 +447,7 @@ def test_connectome_timeseries(epi_file=None, type_of_mask=None):
         #To have them standardized to norm unit, we further have to divide the 
         #result by the length of the time series.
         
-def  load_fmri_image_name(image_file=None):
+def  load_fmri_image_name(image_file=None, preprocessing=False):
     """ load a bold data file 
     
     image_file: path of the bold_data.nii
@@ -427,10 +465,17 @@ def  load_fmri_image_name(image_file=None):
         f_name = 'bold_data_mcf2standard.nii'
         f_name = 'wbold_data.nii'
         image_file = os.path.join(dir_name, f_name)
-    preprocessing = False
+    #preprocessing = False
+    
+        
     if preprocessing == True:
         print("Preprocessing the bold_data (MCFLIRT and SliceTimer)")
-        pre_processing_bold(image_file)
+        if type(image_file) is list:
+            for i in range(0, len(image_file)):
+                pre_processing_bold(image_file[i])
+        else:
+            #pdb.set_trace()
+            pre_processing_bold(image_file)
     return image_file, image_params
 
 def pre_processing_bold(image_file, dir_name=None):
@@ -440,7 +485,7 @@ def pre_processing_bold(image_file, dir_name=None):
     from nipype.interfaces import fsl
     slicetimer = True
     if  slicetimer == True: 
-        print "slicetimer interleave for bold:", image_file, " original bold will be overweritten"
+        print "slicetimer interleave for bold:", image_file, " original bold will be overwritten"
         st = fsl.SliceTimer()
         st.inputs.in_file = image_file
         st.inputs.interleaved = True
@@ -464,6 +509,8 @@ def plot_ts_network(ts, labels=None, subject_id=None,rs_net_name=None):
     labels: list of labels
     """
     # distinguish between coordinates and atlas to do not have a lgend when an atlas
+    figsize=(10, 8)
+    fig = plt.figure(figsize=figsize) 
     if labels is None:
         msgtitle = 'Atlas Time Series for %s standarize is %s' % (subject_id, standarize)
         for ts_ix in np.arange(0,  ts.shape[1]):
@@ -1494,3 +1541,218 @@ def save_dict_in_file(nonlinearresults,type_of_mask=None):
     for key, val in nonlinearresults.items():
         w.writerow([key, val])
     print "Saved dict with nonlinar measures in file:", filename
+    
+
+def sparse_inverse_estimator(time_series=None, labels=None, coords=None):
+    """sparse_inverse_estimator estimate sparse inverse covariance matrix (partial covariance)
+    to construct a functional connectome using the sparse inverse covariance.
+    
+    time_series: extracted time series from which to perform the estimator
+    """
+    print("Estimating the sparse inverse covariance with GraphLassoCV....")
+
+    estimator = GraphLassoCV()
+    estimator.fit(time_series)
+    print("Displaying the connectome matrix from the covariance")
+    plt.figure(figsize=(10,10))
+    cov_= estimator.covariance_
+    numrows = cov_.shape[0]
+    numcols = cov_.shape[1]
+    plt.imshow(cov_, interpolation="nearest", vmax=cov_.max(), vmin=-cov_.max(), cmap=plt.cm.RdBu_r)
+    plt.xticks(range(len(labels)), labels, rotation=90)
+    plt.yticks(range(len(labels)), labels)
+    plt.title('Graph Lasso covariance') 
+    print('Displaying the Graph structure from the sparse covariance matrix')
+    plotting.plot_connectome(cov_, coords.values(), title='covariance')
+    
+    print("Displaying the connectome matrix from the precision")
+    plt.figure(figsize=(10,10))   
+    prec_ = estimator.precision_
+    # Normalize the precision matrix
+    norm_prec_ = np.zeros(shape=(numrows,numcols))
+    for row in range(0, numrows):
+        for col in range(0, numcols):
+           norm_prec_[row,col] = prec_[row,col]/(np.sqrt(prec_[row,row]*prec_[col,col]))
+      
+    norm_prec_ = np.abs(norm_prec_)
+    vmax = .9 * prec_.max()
+    #plt.imshow(-prec_, interpolation="nearest", vmax=vmax, vmin=-vmax, cmap=plt.cm.RdBu_r)
+    plt.imshow(norm_prec_, interpolation="nearest", vmax=vmax, vmin=-vmax, cmap=plt.cm.RdBu_r)
+    plt.xticks(range(len(labels)), labels, rotation=90)
+    plt.yticks(range(len(labels)), labels)
+    plt.title('Graph Lasso precision matrix (inv cov)') 
+    print('displaying the Graph structure from the sparse covariance matrix')
+    #plotting.plot_connectome(-estimator.precision_, coords.values(), title='Sparse inverse covariance') 
+    plotting.plot_connectome(norm_prec_, coords.values(), title='Sparse inverse covariance') 
+    plotting.show()
+    
+    print('Displaying the connectome matrix from LeDoit shrinkage')
+    plt.figure(figsize=(10,10))
+    lw_cov_, _ = ledoit_wolf(time_series)
+    lw_prec_ = linalg.inv(lw_cov_)
+    # Normalize the precision matrix
+    norm_lw_prec_ = normalize_prec_matrix(lw_prec_) 
+ 
+    vmax=  .9 * lw_prec_.max()
+    plt.imshow(norm_lw_prec_, interpolation="nearest", vmax=lw_prec_.max(), vmin=-lw_prec_.max(), cmap=plt.cm.RdBu_r)
+    plt.xticks(range(len(labels)), labels, rotation=90)
+    plt.yticks(range(len(labels)), labels)
+    plt.title('Ledoit normalized precision (sparse invserse covariance)') 
+    plotting.plot_connectome(norm_lw_prec_, coords.values(), title='Ledoit inverse covariance')    
+    plotting.show()
+    return estimator, norm_lw_prec_
+ 
+def sparse_inverse_estimator_nsubjects(subject_time_series=None, labels=None, coords=None):  
+    """plot connectome and matrix for group of subjects sparse covariance and orecision
+    subject_time_series ndarray
+    """
+    edge_threshold = '60%' # 0.6 #'60%'
+    
+    print('Calling to nilearn.connectome.GroupSparseCovarianceCV \
+        Sparse inverse covariance w/ cross-validated choice of the parameter')
+    gsc = GroupSparseCovarianceCV(verbose=2)
+    gsc.fit(subject_time_series)
+    #edge_threshold = np.mean(gsc.covariances_[...,0]) + np.std(gsc.covariances_[...,0]) -4
+    plotting.plot_connectome(-gsc.precisions_[...,0], coords.values(), edge_threshold=edge_threshold,
+                             title=str(edge_threshold)+'-GroupSparseCovariancePrec', display_mode='lzr')
+    plotting.plot_connectome(gsc.covariances_[...,0], coords.values(), edge_threshold=edge_threshold,
+                             title=str(edge_threshold)+'-GroupSparseCovariance', display_mode='lzr')
+    plot_covariance_matrix(gsc.covariances_[..., 0],gsc.precisions_[..., 0], labels, title = str(edge_threshold)+"-GroupSparseCovariance")
+    plotting.show()
+    # persistent homology analysis
+    persistent_homology(gsc.covariances_[..., 0], coords)
+    return
+    #persistent_homology(-gsc.precisions_[..., 0], coords)
+    #pdb.set_trace()
+    
+    #gl = GraphLassoCV(verbose=2)
+    #print('gl object created!')
+    #gl.fit(np.concatenate(subject_time_series))
+    #print('gl fit performed')
+    # plotting connectome
+    #norm_gl_prec_ = normalize_prec_matrix(gl.precision_)
+    #print('Calling to GL plot_connectome for covariance')
+    #plotting.plot_connectome(gl.covariance_, coords.values(), edge_threshold=edge_threshold,title=str(edge_threshold)+'-Covariance', display_mode='lzr')
+    #print('Calling to GL plot_connectome for precision')
+    #plotting.plot_connectome(-gl.precision_, coords.values(), edge_threshold=edge_threshold, title='Sparse inverse covariance (GraphLasso)', display_mode='lzr')
+    #plotting.plot_connectome(norm_gl_prec_, coords.values(), edge_threshold=edge_threshold, title=str(edge_threshold)+'-Norm Sparse inverse covariance (GraphLasso)', display_mode='lzr')   
+    #plot_covariance_matrix(gl.covariance_, gl.precision_, title = "GraphLasso with l1 penalty", labels)
+    #plot_covariance_matrix(gl.covariance_, norm_gl_prec_, labels, title = str(edge_threshold)+"-Norm GraphLasso with l1 penalty")
+
+    #return gsc, gl
+    return gsc
+
+def plot_covariance_matrix(cov, prec, labels, title):
+    """Plot covariances and precision matrices for a given processing"""
+    prec = prec.copy()  # avoid side effects    
+     # Put zeros on the diagonal, for graph clarity.
+    size = prec.shape[0]
+    #prec[list(range(size)), list(range(size))] = 0
+    span = max(abs(prec.min()), abs(prec.max()))
+    
+    # Display covariance matrix
+    plt.figure()
+    #plt.imshow(cov, interpolation='nearest', vmin=-1, vmax=1, cmap=plotting.cm.bwr)
+    plt.xticks(range(len(labels)), labels, rotation=90)
+    plt.yticks(range(len(labels)), labels)
+
+    plt.imshow(cov, interpolation='nearest', vmin=0, vmax=1, cmap=plotting.cm.bwr)
+    plt.colorbar()
+    plt.title("%s / covariance" % title)
+     # Display precision matrix
+    plt.figure()
+    plt.xticks(range(len(labels)), labels, rotation=90)
+    plt.yticks(range(len(labels)), labels)
+    plt.imshow(prec, interpolation="nearest",
+               vmin=-span, vmax=span,
+               cmap=plotting.cm.bwr)
+    plt.colorbar()
+    plt.title("%s / precision" % title)
+
+def normalize_prec_matrix(lw_prec_):
+    """ Normalize precision matrix in absolute value """
+    # Normalize the precision matrix
+    numrows = lw_prec_.shape[0]
+    numcols = lw_prec_.shape[1]
+    norm_lw_prec_ =  np.zeros(shape=(numrows,numcols))
+    for row in range(0, numrows):
+        for col in range(0, numcols):
+           norm_lw_prec_[row,col] = lw_prec_[row,col]/(np.sqrt(lw_prec_[row,row]*lw_prec_[col,col]))    
+    
+    return  np.abs(norm_lw_prec_)
+
+def persistent_homology(matrix, coords=None, outputdir=None):
+    """persistent_homology computes PH for a mtrix
+    computes a matrix for every threshold (defined locally)
+    compurtes netork and algebraic topology distances between matrices
+    """
+    #pdb.set_trace()
+    thresholds = np.linspace(0.0,1.0,11) 
+    listofmatrices = []
+    outputdir = '/Users/jaime/vallecas/data/converters_y1/controls/figure_results/'
+    group = 'controls'
+    #outputdir = '/Users/jaime/vallecas/data/converters_y1/converters/figures_results/'
+    #group = 'converters'
+    #if prec normalize
+    matrix = normalize_prec_matrix(matrix)
+    for idx,val in enumerate(thresholds):
+        # convert boolean matrix in 0 and 1 
+        p = np.percentile(matrix,val*100)
+        print('Building connectivity for percentile=', p, ' threshold=', val)                   
+        mat = matrix > val
+        mat = mat + 0
+        listofmatrices.append(mat)
+        #filename = 'prec_thr' + str(val) + '.png'
+        filename = 'cov_thr' + str(val) + '.png'
+        output_file  = os.path.join(outputdir, filename)
+        # plot the connectomes for each thrreshold
+        #title='thr=' + str(val) + ' ' + group
+        plotting.plot_connectome(mat, coords.values(), edge_cmap='Blues',\
+                                 output_file=output_file, display_mode='z')
+    #save the mnd objects
+    matricesfile = os.path.join(outputdir,'listofmatrices')
+    np.save(matricesfile,listofmatrices)
+    network_metrics(matricesfile + '.npy', outputdir)
+    #magick montage -title 'ppp' -geometry +10+0 thr*.png out.png
+    
+def network_metrics(listfmatrix=None, outputdir=None):
+        """compute network metrics for a list of matrices"
+        np.load(listfmatrix)
+        """
+        if type(listfmatrix) is str:
+           listfmatrix = np.load(listfmatrix) 
+           max_cliques = []
+           clustering = []
+           triangles = []
+           conn_components = []
+           avg_shortestpath = []
+           density = []
+           x=np.asarray(range(0,len(listfmatrix)))
+           for i in range(0,len(listfmatrix)):
+               mat = listfmatrix[i]
+               G=nx.from_numpy_matrix(mat)
+               max_cliques.append(nx.graph_clique_number(G))
+               clustering.append(nx.average_clustering(G))
+               triangles.append(nx.triangles(G,0))
+               density.append(nx.density(G))
+               conn_components.append(nx.number_connected_components(G))
+               # for disconnected graphs dont work
+               #avg_shortestpath.append(nx.average_shortest_path_length(G))
+           #plot the metrics
+           plt.figure()
+           plt.plot(x,max_cliques,'r',label=['max size cliques'])
+           plt.plot(x, clustering,'b',label=['clustering'])
+           plt.plot(x,density,'g',label=['density'])
+           plt.plot(x, conn_components,'k',label=['conn_components'])
+           #, conn_components,'g',label=['conn_cmp'], triangles,'k', label=['triangles'])
+           plt.legend(loc='best')
+           msgtitle = 'Network metrics. Controls' 
+           plt.title(msgtitle)
+           plt.xticks(x)
+           #plt.ylabel('Correlation ts~ts shifted')
+           plt.xlabel('threshold percentile')
+           plt.legend()
+           plt.show()
+           outputfile = os.path.join(outputdir,'netmetrics')
+           print('Saving the network metrics at:', outputfile)
+           np.save(outputfile,[max_cliques,clustering,triangles,conn_components])
